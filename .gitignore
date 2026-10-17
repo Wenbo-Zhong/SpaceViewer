@@ -1,0 +1,13 @@
+build/
+win/
+out/
+*.exe
+*.obj
+*.o
+*.res
+*.pdb
+*.ilk
+*.user
+.vs/
+cmake-build-*/
+selftest-result.txt
