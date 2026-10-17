@@ -5,6 +5,7 @@ out/
 *.obj
 *.o
 *.res
+src/platform/win/app.res.o
 *.pdb
 *.ilk
 *.user

@@ -43,16 +43,25 @@ cmake --build build --config Release
 
 CMake 使用 `/MT`，因此 Release 目录里的 `SpaceViewer.exe` 不依赖 VC 运行库 DLL。清单文件同时写了 Windows 7 能识别的 `dpiAware` 和 Windows 10 及更新系统使用的 `PerMonitorV2`。
 
+## 源码布局
+
+引擎在 `src/`。窗口代码按系统分开：`src/platform/win`、`src/platform/linux`、`src/platform/apple`。
+
 ## Ubuntu
 
+需要 X11 和 Wayland 两套依赖。会话里有 `WAYLAND_DISPLAY` 时用 Wayland，连不上再退回 X11。也可以用 `SPACEVIEWER_BACKEND=wayland` 或 `SPACEVIEWER_BACKEND=x11` 指定。
+
 ```sh
-sudo apt install build-essential cmake libx11-dev libxft-dev
+sudo apt install build-essential cmake pkg-config \
+  libx11-dev libxft-dev \
+  libwayland-dev wayland-protocols libxkbcommon-dev \
+  libfontconfig1-dev libfreetype6-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ./build/spaceviewer
 ```
 
-没有 CMake 时可以 `sh build-linux.sh`。选择文件夹需要 `zenity` 或 `kdialog`；没有这两个程序时，在路径栏输入路径后回车。高分屏请让 `Xft.dpi` 等于实际 DPI（例如 144 或 192），界面会按这个比例放大，并用 X11 的像素直接绘制。
+没有 CMake 时可以 `sh build-linux.sh`。选择文件夹需要 `zenity` 或 `kdialog`；没有这两个程序时，在路径栏输入路径后回车。X11 高分屏请让 `Xft.dpi` 等于实际 DPI。Wayland 使用输出的整数缩放，界面按物理像素绘制。
 
 ## macOS
 

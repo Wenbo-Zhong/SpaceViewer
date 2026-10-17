@@ -26,8 +26,10 @@ add_executable(spaceviewer
   src/opencl_fill.cpp
 )
 
+target_include_directories(spaceviewer PRIVATE src)
+
 if(WIN32)
-  target_sources(spaceviewer PRIVATE src/platform_win.cpp src/app.rc)
+  target_sources(spaceviewer PRIVATE src/platform/win/window.cpp src/platform/win/app.rc)
   set_target_properties(spaceviewer PROPERTIES WIN32_EXECUTABLE TRUE OUTPUT_NAME SpaceViewer)
   target_compile_definitions(spaceviewer PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 UNICODE _UNICODE NOMINMAX)
   if(MSVC)
@@ -39,8 +41,8 @@ if(WIN32)
     file(MAKE_DIRECTORY "${manifest_dir}")
     add_custom_command(
       OUTPUT "${manifest_dir}/default-manifest.o"
-      COMMAND "${CMAKE_C_COMPILER}" -c "${CMAKE_CURRENT_SOURCE_DIR}/src/empty_manifest.c" -o "${manifest_dir}/default-manifest.o"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/empty_manifest.c"
+      COMMAND "${CMAKE_C_COMPILER}" -c "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/win/empty_manifest.c" -o "${manifest_dir}/default-manifest.o"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/win/empty_manifest.c"
       VERBATIM)
     add_custom_target(spaceviewer_manifest DEPENDS "${manifest_dir}/default-manifest.o")
     add_dependencies(spaceviewer spaceviewer_manifest)
@@ -48,20 +50,63 @@ if(WIN32)
   endif()
   target_link_libraries(spaceviewer PRIVATE user32 gdi32 shell32 ole32 uuid comdlg32)
 elseif(APPLE)
-  target_sources(spaceviewer PRIVATE src/platform_mac.mm)
-  set_source_files_properties(src/platform_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_sources(spaceviewer PRIVATE src/platform/apple/window.mm)
+  set_source_files_properties(src/platform/apple/window.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   set_target_properties(spaceviewer PROPERTIES OUTPUT_NAME SpaceViewer MACOSX_BUNDLE FALSE)
   target_link_libraries(spaceviewer PRIVATE "-framework Cocoa" "-framework CoreText" "-framework CoreGraphics" "-framework CoreServices")
 else()
-  target_sources(spaceviewer PRIVATE src/platform_x11.cpp)
+  target_sources(spaceviewer PRIVATE
+    src/platform/linux/main.cpp
+    src/platform/linux/host.cpp
+    src/platform/linux/x11.cpp
+    src/platform/linux/wayland.cpp)
+  find_package(PkgConfig REQUIRED)
   find_package(X11 REQUIRED)
   find_path(XFT_INCLUDE_DIR X11/Xft/Xft.h)
   find_library(XFT_LIBRARY Xft)
   if(NOT XFT_INCLUDE_DIR OR NOT XFT_LIBRARY)
     message(FATAL_ERROR "libXft development files are required (Ubuntu: libxft-dev)")
   endif()
-  target_include_directories(spaceviewer PRIVATE ${X11_INCLUDE_DIR} ${XFT_INCLUDE_DIR})
-  target_link_libraries(spaceviewer PRIVATE ${X11_LIBRARIES} ${XFT_LIBRARY})
+  pkg_check_modules(WAYLAND REQUIRED wayland-client)
+  pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
+  pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+  pkg_check_modules(FREETYPE REQUIRED freetype2)
+  pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+  find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+  set(protocol_dir "${CMAKE_CURRENT_BINARY_DIR}/protocols")
+  file(MAKE_DIRECTORY "${protocol_dir}")
+  set(xdg_xml "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
+  set(decoration_xml "${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml")
+  add_custom_command(
+    OUTPUT "${protocol_dir}/xdg-shell-client-protocol.h" "${protocol_dir}/xdg-shell-protocol.c"
+    COMMAND "${WAYLAND_SCANNER}" client-header "${xdg_xml}" "${protocol_dir}/xdg-shell-client-protocol.h"
+    COMMAND "${WAYLAND_SCANNER}" private-code "${xdg_xml}" "${protocol_dir}/xdg-shell-protocol.c"
+    DEPENDS "${xdg_xml}" VERBATIM)
+  add_custom_command(
+    OUTPUT "${protocol_dir}/xdg-decoration-client-protocol.h" "${protocol_dir}/xdg-decoration-protocol.c"
+    COMMAND "${WAYLAND_SCANNER}" client-header "${decoration_xml}" "${protocol_dir}/xdg-decoration-client-protocol.h"
+    COMMAND "${WAYLAND_SCANNER}" private-code "${decoration_xml}" "${protocol_dir}/xdg-decoration-protocol.c"
+    DEPENDS "${decoration_xml}" VERBATIM)
+  target_sources(spaceviewer PRIVATE
+    "${protocol_dir}/xdg-shell-protocol.c"
+    "${protocol_dir}/xdg-decoration-protocol.c")
+  target_include_directories(spaceviewer PRIVATE
+    src/platform/linux
+    "${protocol_dir}"
+    ${X11_INCLUDE_DIR}
+    ${XFT_INCLUDE_DIR}
+    ${WAYLAND_INCLUDE_DIRS}
+    ${XKBCOMMON_INCLUDE_DIRS}
+    ${FONTCONFIG_INCLUDE_DIRS}
+    ${FREETYPE_INCLUDE_DIRS})
+  target_compile_definitions(spaceviewer PRIVATE _GNU_SOURCE)
+  target_link_libraries(spaceviewer PRIVATE
+    ${X11_LIBRARIES}
+    ${XFT_LIBRARY}
+    ${WAYLAND_LIBRARIES}
+    ${XKBCOMMON_LIBRARIES}
+    ${FONTCONFIG_LIBRARIES}
+    ${FREETYPE_LIBRARIES})
   set_target_properties(spaceviewer PROPERTIES OUTPUT_NAME spaceviewer)
 endif()
 

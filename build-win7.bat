@@ -13,13 +13,13 @@ if errorlevel 1 (
   exit /b 1
 )
 if not exist win mkdir win
-gcc -c src\empty_manifest.c -o win\default-manifest.o
+gcc -c src\platform\win\empty_manifest.c -o win\default-manifest.o
 if errorlevel 1 exit /b 1
-windres -O coff -i src\app.rc -o src\app.res.o
+windres -O coff -i src\platform\win\app.rc -o src\platform\win\app.res.o
 if errorlevel 1 exit /b 1
-g++ -std=c++17 -O2 -s -B win\ -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 -DNOMINMAX -mwindows -static -static-libgcc -static-libstdc++ -o SpaceViewer.exe src\main.cpp src\util.cpp src\layout.cpp src\scan.cpp src\ui.cpp src\export.cpp src\selftest.cpp src\motion.cpp src\opencl_fill.cpp src\platform_win.cpp src\app.res.o -luser32 -lgdi32 -lshell32 -lole32 -luuid -loleaut32 -lcomdlg32 -lwinpthread
+g++ -std=c++17 -O2 -s -B win\ -Isrc -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 -DNOMINMAX -mwindows -static -static-libgcc -static-libstdc++ -o SpaceViewer.exe src\main.cpp src\util.cpp src\layout.cpp src\scan.cpp src\ui.cpp src\export.cpp src\selftest.cpp src\motion.cpp src\opencl_fill.cpp src\platform\win\window.cpp src\platform\win\app.res.o -luser32 -lgdi32 -lshell32 -lole32 -luuid -loleaut32 -lcomdlg32 -lwinpthread
 set ERR=%ERRORLEVEL%
-del /q src\app.res.o >nul 2>nul
+del /q src\platform\win\app.res.o >nul 2>nul
 if not %ERR%==0 exit /b %ERR%
 echo Built SpaceViewer.exe
 exit /b 0
