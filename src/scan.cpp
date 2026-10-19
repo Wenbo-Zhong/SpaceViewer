@@ -1150,7 +1150,11 @@ void Scanner::start(const std::string& utf8Path) {
     impl->live.rootPath = path;
     impl->live.sep = sep;
     impl->live.running = true;
+#if defined(_WIN32)
+    impl->live.volumeScan = isVolumeRoot(full);
+#else
     impl->live.volumeScan = isVolumeRoot(path);
+#endif
     std::string rootName = path;
     auto slash = rootName.find_last_of("\\/");
     if (slash != std::string::npos && slash + 1 < rootName.size()) rootName = rootName.substr(slash + 1);
