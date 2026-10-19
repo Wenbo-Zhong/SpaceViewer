@@ -5,6 +5,7 @@
 #include "app.hpp"
 #include "host.hpp"
 #include "menu.hpp"
+#include "text.hpp"
 
 #include "xdg-decoration-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -90,8 +91,11 @@ struct Wayland {
   xkb_state* xkbState = nullptr;
   FT_Library ft = nullptr;
   FT_Face face = nullptr;
+  FT_Face cjkFace = nullptr;
   std::string fontPath;
+  std::string cjkFontPath;
   int facePx = 0;
+  int cjkFacePx = 0;
   int scale = 1;
   int logicalW = 1100;
   int logicalH = 740;
@@ -384,29 +388,51 @@ void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height,
 
 void toplevelClose(void* data, xdg_toplevel*) { static_cast<Wayland*>(data)->running = false; }
 
-bool loadFace(Wayland& app, int px) {
+std::string bundledFontPath(const char* filename) {
+  char executable[4096] = {};
+  ssize_t length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+  std::string path = length > 0 ? std::string(executable, static_cast<size_t>(length)) : std::string(".");
+  size_t slash = path.find_last_of('/');
+  path = slash == std::string::npos ? "." : path.substr(0, slash);
+  return path + "/fonts/" + filename;
+}
+
+bool traditionalChinese() {
+  return zh::language() == zh::Language::TraditionalChinese;
+}
+
+bool loadFace(Wayland& app, int px, bool cjk = false) {
   if (!app.ft && FT_Init_FreeType(&app.ft) != 0) return false;
-  if (app.fontPath.empty()) {
+  if (app.fontPath.empty() || app.cjkFontPath.empty()) {
     FcInit();
-    FcPattern* pattern = FcNameParse(reinterpret_cast<const FcChar8*>("sans"));
-    FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
-    FcDefaultSubstitute(pattern);
-    FcResult result = FcResultMatch;
-    FcPattern* match = FcFontMatch(nullptr, pattern, &result);
-    FcChar8* file = nullptr;
-    if (match && FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
-      app.fontPath = reinterpret_cast<char*>(file);
+    FcConfig* config = FcConfigGetCurrent();
+    if (config) {
+      for (const char* filename : {"Inter-Regular.ttf", "SourceHanSansSC-Regular.otf", "SourceHanSansTC-Regular.otf"}) {
+        std::string path = bundledFontPath(filename);
+        FcConfigAppFontAddFile(config, reinterpret_cast<const FcChar8*>(path.c_str()));
+      }
+      FcConfigBuildFonts(config);
     }
-    if (match) FcPatternDestroy(match);
-    FcPatternDestroy(pattern);
+    app.fontPath = bundledFontPath("Inter-Regular.ttf");
+    app.cjkFontPath = bundledFontPath(traditionalChinese() ? "SourceHanSansTC-Regular.otf" : "SourceHanSansSC-Regular.otf");
   }
-  if (app.fontPath.empty()) return false;
-  if (!app.face && FT_New_Face(app.ft, app.fontPath.c_str(), 0, &app.face) != 0) return false;
-  if (app.facePx != px) {
-    FT_Set_Pixel_Sizes(app.face, 0, static_cast<FT_UInt>(px));
-    app.facePx = px;
+  FT_Face& face = cjk ? app.cjkFace : app.face;
+  const std::string& path = cjk ? app.cjkFontPath : app.fontPath;
+  if (path.empty()) return false;
+  if (!face && FT_New_Face(app.ft, path.c_str(), 0, &face) != 0) return false;
+  int& facePx = cjk ? app.cjkFacePx : app.facePx;
+  if (facePx != px) {
+    FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(px));
+    facePx = px;
   }
   return true;
+}
+
+bool isChinese(uint32_t cp) {
+  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
+         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
+         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
+         (cp >= 0xFF00 && cp <= 0xFFEF);
 }
 
 uint32_t decodeUtf8(const std::string& text, size_t& index) {
@@ -455,17 +481,23 @@ void drawTexts(Wayland& app, Frame& frame) {
     while (index < text.utf8.size()) points.push_back(decodeUtf8(text.utf8, index));
     int width = 0;
     for (uint32_t cp : points) {
-      if (FT_Load_Char(app.face, cp, FT_LOAD_DEFAULT) != 0) continue;
-      width += static_cast<int>(app.face->glyph->advance.x >> 6);
+      FT_Face face = isChinese(cp) ? app.cjkFace : app.face;
+      if (!face || FT_Load_Char(face, cp, FT_LOAD_DEFAULT) != 0) continue;
+      width += static_cast<int>(face->glyph->advance.x >> 6);
     }
     int ascent = static_cast<int>(app.face->size->metrics.ascender >> 6);
     int descent = static_cast<int>(-(app.face->size->metrics.descender >> 6));
+    if (app.cjkFace) {
+      ascent = std::max(ascent, static_cast<int>(app.cjkFace->size->metrics.ascender >> 6));
+      descent = std::max(descent, static_cast<int>(-(app.cjkFace->size->metrics.descender >> 6)));
+    }
     int x = text.x;
     if (text.center) x += std::max(0, (text.w - width) / 2);
     int baseline = text.y + std::max(0, (text.h - (ascent + descent)) / 2) + ascent;
     for (uint32_t cp : points) {
-      if (FT_Load_Char(app.face, cp, FT_LOAD_RENDER) != 0) continue;
-      FT_GlyphSlot glyph = app.face->glyph;
+      FT_Face face = isChinese(cp) ? app.cjkFace : app.face;
+      if (!face || FT_Load_Char(face, cp, FT_LOAD_RENDER) != 0) continue;
+      FT_GlyphSlot glyph = face->glyph;
       blendGlyph(frame.bgra.data(), frame.width, frame.height, glyph->bitmap, x + glyph->bitmap_left,
                  baseline - glyph->bitmap_top, text.rgb, text.x, text.y, text.w, text.h);
       x += static_cast<int>(glyph->advance.x >> 6);
@@ -689,6 +721,7 @@ int spaceviewer_wayland_main(int argc, char** argv) {
   }
 
   if (app.face) FT_Done_Face(app.face);
+  if (app.cjkFace) FT_Done_Face(app.cjkFace);
   if (app.ft) FT_Done_FreeType(app.ft);
   if (app.xkbState) xkb_state_unref(app.xkbState);
   if (app.keymap) xkb_keymap_unref(app.keymap);

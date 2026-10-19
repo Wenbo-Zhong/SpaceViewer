@@ -244,7 +244,7 @@ std::string compactTileText(const std::string& text, int width, int fontPx) {
 
 std::string tileLabel(const TreeSnapshot& tree, const Tile& tile) {
   if (tile.mergeCount > 0) {
-    return std::string("\u5176\u4f59 ") + formatCount(tile.mergeCount) + " \u9879";
+    return std::string(zh::remainingPrefix()) + formatCount(tile.mergeCount) + zh::remainingSuffix();
   }
   if (tile.flags & kFree) return zh::freeSpace();
   if (tile.index == kNone || tile.index >= tree.nodes.size()) return {};
@@ -786,24 +786,24 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   button(x, y, scaled(input.dpi, 64), row1, zh::back(), HotKind::Back, !s.back.empty());
   button(x, y, scaled(input.dpi, 64), row1, zh::forward(), HotKind::Forward, !s.forward.empty());
   button(x, y, scaled(input.dpi, 64), row1, zh::up(), HotKind::Up, hasTree && s.view != 0);
-  button(x, y, scaled(input.dpi, 56), row1, "\u6839\u76ee\u5f55", HotKind::Home, hasTree && s.view != 0);
+  button(x, y, scaled(input.dpi, 56), row1, zh::rootButton(), HotKind::Home, hasTree && s.view != 0);
   button(x, y, scaled(input.dpi, 80), row1, zh::rescan(), HotKind::Rescan, !s.path.text.empty());
   button(x, y, scaled(input.dpi, 64), row1, s.scanner.stopRequested() ? zh::stopping() : zh::stop(), HotKind::Stop,
          running);
   button(x, y, scaled(input.dpi, 64), row1, zh::exportCsv(), HotKind::Export, hasTree && !s.exportRunning);
-  button(x, y, scaled(input.dpi, 56), row1, "\u5c40\u90e8\u5237\u65b0", HotKind::FocusRescan, hasTree && !running);
-  button(x, y, scaled(input.dpi, 56), row1, "\u51cf\u5c11\u7ec6\u8282", HotKind::LessDetail, hasTree && s.options.detail > 0);
-  button(x, y, scaled(input.dpi, 56), row1, "\u589e\u52a0\u7ec6\u8282", HotKind::MoreDetail, hasTree && s.options.detail < 6);
-  button(x, y, scaled(input.dpi, 56), row1, "\u6587\u4ef6\u7c7b\u578b", HotKind::FileGroups, hasTree);
-  button(x, y, scaled(input.dpi, 56), row1, "\u53ef\u7528\u7a7a\u95f4", HotKind::ShowFree, hasTree);
-  button(x, y, scaled(input.dpi, 56), row1, "\u672a\u77e5\u7a7a\u95f4", HotKind::ShowUnknown, hasTree);
-  button(x, y, scaled(input.dpi, 56), row1, "\u914d\u7f6e", HotKind::Configure, static_cast<bool>(host.configure));
+  button(x, y, scaled(input.dpi, 56), row1, zh::focusRescan(), HotKind::FocusRescan, hasTree && !running);
+  button(x, y, scaled(input.dpi, 56), row1, zh::lessDetailButton(), HotKind::LessDetail, hasTree && s.options.detail > 0);
+  button(x, y, scaled(input.dpi, 56), row1, zh::moreDetailButton(), HotKind::MoreDetail, hasTree && s.options.detail < 6);
+  button(x, y, scaled(input.dpi, 56), row1, zh::fileTypeButton(), HotKind::FileGroups, hasTree);
+  button(x, y, scaled(input.dpi, 56), row1, zh::showFreeButton(), HotKind::ShowFree, hasTree);
+  button(x, y, scaled(input.dpi, 56), row1, zh::showUnknownButton(), HotKind::ShowUnknown, hasTree);
+  button(x, y, scaled(input.dpi, 56), row1, zh::preferencesButton(), HotKind::Configure, static_cast<bool>(host.configure));
   int pathX = pathBelow ? gap : x + gap;
   int pathY = pathBelow ? gap + row1 + gap : y + scaled(input.dpi, 25);
   int pathH = scaled(input.dpi, 32);
   int pathW = std::max(1, width - gap - pathX);
   if (!pathBelow) drawText(frame, pathX, y, pathW, scaled(input.dpi, 22),
-                            "\u5f53\u524d\u8def\u5f84", 0x7c8b9c, font - 1, false);
+                            zh::currentPath(), 0x7c8b9c, font - 1, false);
   uint32_t pathBorder = s.focus == Focus::Path ? 0x6b9dcd : 0xdce3ec;
   roundRect(frame, pathX, pathY, pathW, pathH, scaled(input.dpi, 5), pathBorder);
   roundRect(frame, pathX + 1, pathY + 1, pathW - 2, pathH - 2, scaled(input.dpi, 4), 0xffffff);
@@ -1130,7 +1130,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     } else if (s.shown->aborted) {
       status += zh::stopped();
     } else if (s.shown->complete) {
-      status += s.archived ? "\u5feb\u7167 (\u79bb\u7ebf)" : zh::scanDone();
+      status += s.archived ? zh::snapshotOffline() : zh::scanDone();
       if (s.shown->watchGap) {
         status += "   ";
         status += zh::watchGap();

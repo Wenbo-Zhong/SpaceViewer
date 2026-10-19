@@ -11,8 +11,29 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 namespace {
+
+bool isChinese(uint32_t cp) {
+  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
+         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
+         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
+         (cp >= 0xFF00 && cp <= 0xFFEF);
+}
+
+NSString* bundledCjkFontName() {
+  return zh::language() == zh::Language::TraditionalChinese ? @"Source Han Sans TC" : @"Source Han Sans SC";
+}
+
+void registerBundledFonts() {
+  NSString* fonts = [[[NSBundle mainBundle] resourceURL] URLByAppendingPathComponent:@"Fonts" isDirectory:YES].path;
+  if (!fonts) return;
+  for (NSString* name in @[@"Inter-Regular.ttf", @"SourceHanSansSC-Regular.otf", @"SourceHanSansTC-Regular.otf"]) {
+    NSURL* url = [NSURL fileURLWithPath:[fonts stringByAppendingPathComponent:name]];
+    CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, nullptr);
+  }
+}
 
 bool isMount(const std::string& path) {
   if (path == "/") return true;
@@ -117,11 +138,11 @@ static SVView* gView = nil;
   host_.volumes = []() { return listVolumes(); };
   host_.pickFolder = [](std::string& path) {
     NSAlert* scope = [NSAlert new];
-    scope.messageText = @"选择扫描范围";
-    scope.informativeText = @"可以扫描整个启动磁盘，也可以选择某个磁盘或文件夹。扫描整个磁盘可能需要在系统设置中启用“完全磁盘访问”。";
-    [scope addButtonWithTitle:@"扫描整个启动磁盘"];
-    [scope addButtonWithTitle:@"选择磁盘或文件夹"];
-    [scope addButtonWithTitle:@"取消"];
+    scope.messageText = [NSString stringWithUTF8String:zh::scanScopeTitle()];
+    scope.informativeText = [NSString stringWithUTF8String:zh::scanScopeMessage()];
+    [scope addButtonWithTitle:[NSString stringWithUTF8String:zh::scanEntireDisk()]];
+    [scope addButtonWithTitle:[NSString stringWithUTF8String:zh::chooseDiskFolder()]];
+    [scope addButtonWithTitle:[NSString stringWithUTF8String:zh::cancel()]];
     NSModalResponse scopeChoice = [scope runModal];
     if (scopeChoice == NSAlertFirstButtonReturn) {
       path = "/";
@@ -136,8 +157,8 @@ static SVView* gView = nil;
     panel.canCreateDirectories = NO;
     panel.resolvesAliases = YES;
     panel.directoryURL = [NSURL fileURLWithPath:@"/" isDirectory:YES];
-    panel.title = @"选择扫描位置";
-    panel.message = @"选择一个磁盘或文件夹。若扫描受保护的位置，macOS 会提示你授权访问。";
+    panel.title = [NSString stringWithUTF8String:zh::scanLocationTitle()];
+    panel.message = [NSString stringWithUTF8String:zh::scanLocationMessage()];
     panel.prompt = [NSString stringWithUTF8String:zh::pickTitle()];
     if ([panel runModal] != NSModalResponseOK || !panel.URL.path) return false;
     path = panel.URL.path.UTF8String;
@@ -170,12 +191,11 @@ static SVView* gView = nil;
   host_.permissionWarning = [](uint64_t count) {
     dispatch_async(dispatch_get_main_queue(), ^{
       NSAlert* alert = [NSAlert new];
-      alert.messageText = @"部分位置没有访问权限";
+      alert.messageText = [NSString stringWithUTF8String:zh::accessDenied()];
       alert.informativeText = [NSString stringWithFormat:
-          @"macOS 拒绝读取 %llu 个位置。若要完整扫描启动磁盘，请在“系统设置 > 隐私与安全性 > 完全磁盘访问”中启用 SpaceViewer，然后重新扫描。",
-          static_cast<unsigned long long>(count)];
-      [alert addButtonWithTitle:@"打开完全磁盘访问设置"];
-      [alert addButtonWithTitle:@"知道了"];
+          [NSString stringWithUTF8String:zh::permissionDetails()], static_cast<unsigned long long>(count)];
+      [alert addButtonWithTitle:[NSString stringWithUTF8String:zh::fullDiskAccess()]];
+      [alert addButtonWithTitle:[NSString stringWithUTF8String:zh::ok()]];
       if ([alert runModal] == NSAlertFirstButtonReturn) {
         NSURL* settings = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"];
         [[NSWorkspace sharedWorkspace] openURL:settings];
@@ -340,6 +360,8 @@ static SVView* gView = nil;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+  static dispatch_once_t registerOnce;
+  dispatch_once(&registerOnce, ^{ registerBundledFonts(); });
   CGFloat scale = self.window ? self.window.backingScaleFactor : [[NSScreen mainScreen] backingScaleFactor];
   if (scale < 1) scale = 1;
   NSRect backing = [self convertRectToBacking:self.bounds];
@@ -372,19 +394,34 @@ static SVView* gView = nil;
       NSMutableParagraphStyle* style = [[NSMutableParagraphStyle alloc] init];
       style.lineBreakMode = NSLineBreakByTruncatingTail;
       style.alignment = text.center ? NSTextAlignmentCenter : NSTextAlignmentLeft;
-      NSFont* font = [NSFont systemFontOfSize:std::max(8.0, text.fontPx / scale)];
+      CGFloat pointSize = std::max(8.0, text.fontPx / scale);
+      NSFont* font = [NSFont fontWithName:@"Inter" size:pointSize];
+      if (!font) font = [NSFont systemFontOfSize:pointSize];
       NSColor* color = [NSColor colorWithCalibratedRed:((text.rgb >> 16) & 255) / 255.0
                                                  green:((text.rgb >> 8) & 255) / 255.0
                                                   blue:(text.rgb & 255) / 255.0
                                                  alpha:1];
-      NSDictionary* attrs = @{
+      NSMutableAttributedString* attributed = [[NSMutableAttributedString alloc] initWithString:string attributes:@{
         NSFontAttributeName : font,
         NSForegroundColorAttributeName : color,
         NSParagraphStyleAttributeName : style
-      };
+      }];
+      NSString* cjkName = bundledCjkFontName();
+      NSFont* cjkFont = [NSFont fontWithName:cjkName size:pointSize];
+      if (cjkFont) {
+        for (NSUInteger index = 0; index < string.length;) {
+          NSRange range = [string rangeOfComposedCharacterSequenceAtIndex:index];
+          uint32_t cp = [string characterAtIndex:index];
+          if (CFStringIsSurrogateHighCharacter(static_cast<UniChar>(cp)) && index + 1 < string.length) {
+            cp = CFStringGetLongCharacterForSurrogatePair(static_cast<UniChar>(cp), [string characterAtIndex:index + 1]);
+          }
+          if (isChinese(cp)) [attributed addAttribute:NSFontAttributeName value:cjkFont range:range];
+          index = NSMaxRange(range);
+        }
+      }
       CGFloat x = text.x / scale;
       CGFloat y = NSHeight(self.bounds) - (text.y + text.h) / scale;
-      [string drawInRect:NSMakeRect(x, y, text.w / scale, text.h / scale) withAttributes:attrs];
+      [attributed drawInRect:NSMakeRect(x, y, text.w / scale, text.h / scale)];
     }
   }
   if (app_->animating()) {

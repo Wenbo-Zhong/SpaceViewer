@@ -24,9 +24,33 @@ add_executable(spaceviewer
   src/selftest.cpp
   src/motion.cpp
   src/opencl_fill.cpp
+  src/text.cpp
 )
 
 target_include_directories(spaceviewer PRIVATE src)
+
+set(SPACEVIEWER_GENERATED_FONTS_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated-fonts")
+file(MAKE_DIRECTORY "${SPACEVIEWER_GENERATED_FONTS_DIR}")
+set(SPACEVIEWER_FONTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Inter-Regular.ttf")
+foreach(font IN ITEMS SourceHanSansSC-Regular.otf SourceHanSansTC-Regular.otf)
+  file(GLOB font_parts CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/parts/${font}.part*")
+  if(NOT font_parts)
+    message(FATAL_ERROR "Missing bundled font parts for ${font}")
+  endif()
+  set(combined_font "${SPACEVIEWER_GENERATED_FONTS_DIR}/${font}")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E cat ${font_parts}
+    OUTPUT_FILE "${combined_font}"
+    RESULT_VARIABLE combine_result)
+  if(NOT combine_result EQUAL 0)
+    message(FATAL_ERROR "Could not assemble bundled font ${font}: ${combine_result}")
+  endif()
+  list(APPEND SPACEVIEWER_FONTS "${combined_font}")
+endforeach()
+set(SPACEVIEWER_FONT_LICENSES
+  "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Inter-LICENSE.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/SourceHanSans-LICENSE.txt")
 
 if(WIN32)
   target_sources(spaceviewer PRIVATE src/platform/win/window.cpp src/platform/win/app.rc)
@@ -49,12 +73,23 @@ if(WIN32)
     target_link_options(spaceviewer PRIVATE -static -static-libgcc -static-libstdc++ "SHELL:-B ${manifest_dir}/" -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
   endif()
   target_link_libraries(spaceviewer PRIVATE comctl32 user32 gdi32 shell32 ole32 uuid comdlg32)
+  add_custom_command(TARGET spaceviewer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:spaceviewer>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACEVIEWER_FONTS} "$<TARGET_FILE_DIR:spaceviewer>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACEVIEWER_FONT_LICENSES} "$<TARGET_FILE_DIR:spaceviewer>/fonts"
+    VERBATIM)
 elseif(APPLE)
   target_sources(spaceviewer PRIVATE
     src/platform/apple/window.mm
     src/platform/apple/disk_space.mm
     src/platform/apple/scan_policy.cpp
-    src/platform/apple/PrivacyInfo.xcprivacy)
+    src/platform/apple/PrivacyInfo.xcprivacy
+    ${SPACEVIEWER_FONTS}
+    ${SPACEVIEWER_FONT_LICENSES})
+  set_source_files_properties(${SPACEVIEWER_FONTS}
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Fonts)
+  set_source_files_properties(${SPACEVIEWER_FONT_LICENSES}
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Fonts)
   set_source_files_properties(src/platform/apple/window.mm src/platform/apple/disk_space.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   set_source_files_properties(src/platform/apple/PrivacyInfo.xcprivacy
@@ -123,6 +158,11 @@ else()
     ${FONTCONFIG_LIBRARIES}
     ${FREETYPE_LIBRARIES})
   set_target_properties(spaceviewer PROPERTIES OUTPUT_NAME spaceviewer)
+  add_custom_command(TARGET spaceviewer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:spaceviewer>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACEVIEWER_FONTS} "$<TARGET_FILE_DIR:spaceviewer>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACEVIEWER_FONT_LICENSES} "$<TARGET_FILE_DIR:spaceviewer>/fonts"
+    VERBATIM)
 endif()
 
 find_package(Threads REQUIRED)

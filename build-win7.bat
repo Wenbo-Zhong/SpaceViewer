@@ -21,5 +21,13 @@ g++ -std=c++17 -O2 -s -B win\ -Isrc -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -
 set ERR=%ERRORLEVEL%
 del /q src\platform\win\app.res.o >nul 2>nul
 if not %ERR%==0 exit /b %ERR%
+if not exist fonts mkdir fonts
+copy /y assets\fonts\Inter-Regular.ttf fonts\ >nul
+copy /b assets\fonts\parts\SourceHanSansSC-Regular.otf.part00+assets\fonts\parts\SourceHanSansSC-Regular.otf.part01+assets\fonts\parts\SourceHanSansSC-Regular.otf.part02 fonts\SourceHanSansSC-Regular.otf >nul
+if errorlevel 1 exit /b 1
+copy /b assets\fonts\parts\SourceHanSansTC-Regular.otf.part00+assets\fonts\parts\SourceHanSansTC-Regular.otf.part01+assets\fonts\parts\SourceHanSansTC-Regular.otf.part02 fonts\SourceHanSansTC-Regular.otf >nul
+if errorlevel 1 exit /b 1
+copy /y assets\fonts\Inter-LICENSE.txt fonts\ >nul
+copy /y assets\fonts\SourceHanSans-LICENSE.txt fonts\ >nul
 echo Built SpaceViewer.exe
 exit /b 0

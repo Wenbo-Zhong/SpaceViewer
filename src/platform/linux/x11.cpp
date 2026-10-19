@@ -1,12 +1,14 @@
 #include "app.hpp"
 #include "host.hpp"
 #include "menu.hpp"
+#include "text.hpp"
 
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #include <X11/Xft/Xft.h>
+#include <fontconfig/fontconfig.h>
 
 #include <cerrno>
 #include <clocale>
@@ -15,7 +17,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <sys/select.h>
@@ -69,6 +73,8 @@ struct X11App {
   LinuxMenuState menu;
   std::vector<XftFont*> fonts;
   std::vector<int> fontPx;
+  std::vector<XftFont*> cjkFonts;
+  std::vector<int> cjkFontPx;
   XIM xim = nullptr;
   XIC xic = nullptr;
 };
@@ -96,23 +102,60 @@ void clearEdges(Input& input) {
   input.typed.clear();
 }
 
-XftFont* fontFor(X11App& app, int px) {
+bool isChinese(uint32_t cp) {
+  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
+         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
+         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
+         (cp >= 0xFF00 && cp <= 0xFFEF);
+}
+
+bool traditionalChinese() {
+  return zh::language() == zh::Language::TraditionalChinese;
+}
+
+XftFont* fontFor(X11App& app, int px, bool cjk = false) {
   if (px < 8) px = 8;
-  for (size_t i = 0; i < app.fontPx.size(); ++i) {
-    if (app.fontPx[i] == px) return app.fonts[i];
+  auto& sizes = cjk ? app.cjkFontPx : app.fontPx;
+  auto& fonts = cjk ? app.cjkFonts : app.fonts;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    if (sizes[i] == px) return fonts[i];
   }
-  std::string name = "sans:pixelsize=" + std::to_string(px);
+  std::string family = cjk ? (traditionalChinese() ? "Source Han Sans TC" : "Source Han Sans SC") : "Inter";
+  std::string name = family + ":pixelsize=" + std::to_string(px);
   XftFont* font = XftFontOpenName(app.display, app.screen, name.c_str());
-  app.fonts.push_back(font);
-  app.fontPx.push_back(px);
+  fonts.push_back(font);
+  sizes.push_back(px);
   return font;
+}
+
+std::vector<std::pair<std::string, bool>> splitRuns(const std::string& text) {
+  std::vector<std::pair<std::string, bool>> runs;
+  size_t i = 0;
+  while (i < text.size()) {
+    size_t start = i;
+    unsigned char lead = static_cast<unsigned char>(text[i++]);
+    int extra = lead < 0x80 ? 0 : lead >= 0xF0 ? 3 : lead >= 0xE0 ? 2 : lead >= 0xC0 ? 1 : 0;
+    uint32_t cp = lead & (extra == 3 ? 0x07 : extra == 2 ? 0x0F : extra == 1 ? 0x1F : 0x7F);
+    for (int j = 0; j < extra && i < text.size(); ++j) cp = (cp << 6) | (static_cast<unsigned char>(text[i++]) & 0x3F);
+    bool cjk = isChinese(cp);
+    while (i < text.size()) {
+      size_t next = i;
+      unsigned char b = static_cast<unsigned char>(text[next++]);
+      int n = b < 0x80 ? 0 : b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0;
+      uint32_t nextCp = b & (n == 3 ? 7 : n == 2 ? 15 : n == 1 ? 31 : 127);
+      for (int j = 0; j < n && next < text.size(); ++j) nextCp = (nextCp << 6) | (static_cast<unsigned char>(text[next++]) & 63);
+      if (isChinese(nextCp) != cjk) break;
+      i = next;
+    }
+    runs.emplace_back(text.substr(start, i - start), cjk);
+  }
+  return runs;
 }
 
 void drawTexts(X11App& app, const Frame& frame) {
   if (!app.draw) return;
   for (const Frame::Text& text : frame.texts) {
-    XftFont* font = fontFor(app, text.fontPx);
-    if (!font) continue;
+    auto runs = splitRuns(text.utf8);
     XRenderColor rc;
     rc.red = static_cast<unsigned short>(((text.rgb >> 16) & 255) * 257);
     rc.green = static_cast<unsigned short>(((text.rgb >> 8) & 255) * 257);
@@ -120,19 +163,33 @@ void drawTexts(X11App& app, const Frame& frame) {
     rc.alpha = 65535;
     XftColor color;
     if (!XftColorAllocValue(app.display, DefaultVisual(app.display, app.screen), app.colormap, &rc, &color)) continue;
-    XGlyphInfo info;
-    XftTextExtentsUtf8(app.display, font, reinterpret_cast<const FcChar8*>(text.utf8.data()),
-                       static_cast<int>(text.utf8.size()), &info);
     int x = text.x;
-    if (text.center) x += std::max(0, (text.w - static_cast<int>(info.width)) / 2);
-    int y = text.y + std::max(0, (text.h - static_cast<int>(font->ascent + font->descent)) / 2) + font->ascent;
+    int totalWidth = 0;
+    int height = 0, ascent = 0;
+    for (const auto& run : runs) {
+      XftFont* font = fontFor(app, text.fontPx, run.second);
+      if (!font) continue;
+      XGlyphInfo extent{};
+      XftTextExtentsUtf8(app.display, font, reinterpret_cast<const FcChar8*>(run.first.data()), static_cast<int>(run.first.size()), &extent);
+      totalWidth += extent.xOff;
+      height = std::max(height, font->ascent + font->descent);
+      ascent = std::max(ascent, font->ascent);
+    }
+    if (text.center) x += std::max(0, (text.w - totalWidth) / 2);
+    int y = text.y + std::max(0, (text.h - height) / 2) + ascent;
     Region region = XCreateRegion();
     XRectangle rectangle{static_cast<short>(text.x), static_cast<short>(text.y), static_cast<unsigned short>(text.w),
                          static_cast<unsigned short>(text.h)};
     XUnionRectWithRegion(&rectangle, region, region);
     XftDrawSetClip(app.draw, region);
-    XftDrawStringUtf8(app.draw, &color, font, x, y, reinterpret_cast<const FcChar8*>(text.utf8.data()),
-                      static_cast<int>(text.utf8.size()));
+    for (const auto& run : runs) {
+      XftFont* font = fontFor(app, text.fontPx, run.second);
+      if (!font) continue;
+      XGlyphInfo extent{};
+      XftTextExtentsUtf8(app.display, font, reinterpret_cast<const FcChar8*>(run.first.data()), static_cast<int>(run.first.size()), &extent);
+      XftDrawStringUtf8(app.draw, &color, font, x, y, reinterpret_cast<const FcChar8*>(run.first.data()), static_cast<int>(run.first.size()));
+      x += extent.xOff;
+    }
     XftDrawSetClip(app.draw, nullptr);
     XDestroyRegion(region);
     XftColorFree(app.display, DefaultVisual(app.display, app.screen), app.colormap, &color);
@@ -211,6 +268,20 @@ int spaceviewer_x11_main(int argc, char** argv) {
   X11App app;
   app.display = display;
   app.screen = DefaultScreen(display);
+  char executable[4096] = {};
+  ssize_t executableLength = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+  std::string executablePath = executableLength > 0
+      ? std::string(executable, static_cast<size_t>(executableLength)) : std::string(".");
+  size_t executableSlash = executablePath.find_last_of('/');
+  std::string fontDirectory = (executableSlash == std::string::npos ? std::string(".") : executablePath.substr(0, executableSlash)) + "/fonts/";
+  FcConfig* fontConfig = FcConfigGetCurrent();
+  if (fontConfig) {
+    for (const char* filename : {"Inter-Regular.ttf", "SourceHanSansSC-Regular.otf", "SourceHanSansTC-Regular.otf"}) {
+      std::string path = fontDirectory + filename;
+      FcConfigAppFontAddFile(fontConfig, reinterpret_cast<const FcChar8*>(path.c_str()));
+    }
+    FcConfigBuildFonts(fontConfig);
+  }
   app.dpi = readDpi(display);
   app.colormap = DefaultColormap(display, app.screen);
   int width = 1100 * app.dpi / 96;
@@ -377,6 +448,9 @@ int spaceviewer_x11_main(int argc, char** argv) {
   }
 
   for (XftFont* font : app.fonts) {
+    if (font) XftFontClose(display, font);
+  }
+  for (XftFont* font : app.cjkFonts) {
     if (font) XftFontClose(display, font);
   }
   if (app.draw) XftDrawDestroy(app.draw);

@@ -20,6 +20,8 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <iterator>
+#include <algorithm>
 
 #include <cstdint>
 #include <cstring>
@@ -43,6 +45,7 @@ struct WinState {
   int bmpH = 0;
   std::vector<HFONT> fonts;
   std::vector<int> fontPx;
+  std::vector<std::wstring> registeredFontPaths;
   wchar_t highSurrogate = 0;
   LARGE_INTEGER qpf{};
 };
@@ -107,16 +110,50 @@ void clearEdges(Input& input) {
   input.typed.clear();
 }
 
-HFONT fontFor(WinState& state, int px) {
-  if (px < 8) px = 8;
-  for (size_t i = 0; i < state.fontPx.size(); ++i) {
-    if (state.fontPx[i] == px) return state.fonts[i];
+std::wstring appDirectory() {
+  wchar_t path[32768] = {};
+  DWORD size = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+  if (!size || size >= std::size(path)) return L".";
+  std::wstring result(path);
+  size_t separator = result.find_last_of(L"\\/");
+  if (separator != std::wstring::npos) result.resize(separator);
+  return result;
+}
+
+void loadBundledFonts(WinState& state) {
+  std::wstring directory = appDirectory() + L"\\fonts\\";
+  for (const wchar_t* name : {L"Inter-Regular.ttf", L"SourceHanSansSC-Regular.otf", L"SourceHanSansTC-Regular.otf"}) {
+    std::wstring path = directory + name;
+    if (AddFontResourceExW(path.c_str(), FR_PRIVATE, nullptr)) state.registeredFontPaths.push_back(path);
   }
+  SendMessageTimeoutW(HWND_BROADCAST, WM_FONTCHANGE, 0, 0, SMTO_ABORTIFHUNG, 1000, nullptr);
+}
+
+HFONT fontFor(WinState& state, int px, bool cjk = false) {
+  if (px < 8) px = 8;
+  bool traditional = zh::language() == zh::Language::TraditionalChinese;
+  int key = cjk ? -px : px;
+  for (size_t i = 0; i < state.fontPx.size(); ++i) {
+    if (state.fontPx[i] == key) return state.fonts[i];
+  }
+  const wchar_t* family = cjk ? (traditional ? L"Source Han Sans TC" : L"Source Han Sans SC") : L"Inter";
   HFONT font = CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
+                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, family);
   state.fonts.push_back(font);
-  state.fontPx.push_back(px);
+  state.fontPx.push_back(key);
   return font;
+}
+
+bool isChinese(const std::wstring& text, size_t index) {
+  uint32_t cp = text[index];
+  if (cp >= 0xD800 && cp <= 0xDBFF && index + 1 < text.size() &&
+      text[index + 1] >= 0xDC00 && text[index + 1] <= 0xDFFF) {
+    cp = 0x10000 + ((cp - 0xD800) << 10) + (text[index + 1] - 0xDC00);
+  }
+  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
+         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
+         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
+         (cp >= 0xFF00 && cp <= 0xFFEF);
 }
 
 void ensureBitmap(WinState& state, int width, int height) {
@@ -151,8 +188,6 @@ void present(WinState& state, const Frame& frame, HDC target) {
   std::memcpy(state.bits, frame.bgra.data(), frame.bgra.size() * sizeof(uint32_t));
   SetBkMode(state.memDc, TRANSPARENT);
   for (const Frame::Text& text : frame.texts) {
-    HFONT font = fontFor(state, text.fontPx);
-    HGDIOBJ old = SelectObject(state.memDc, font);
     SetTextColor(state.memDc, RGB((text.rgb >> 16) & 255, (text.rgb >> 8) & 255, text.rgb & 255));
     RECT rect{text.x, text.y, text.x + text.w, text.y + text.h};
     std::wstring wide = utf8ToWide(text.utf8);
@@ -160,9 +195,46 @@ void present(WinState& state, const Frame& frame, HDC target) {
     format |= text.center ? DT_CENTER : DT_LEFT;
     int saved = SaveDC(state.memDc);
     IntersectClipRect(state.memDc, rect.left, rect.top, rect.right, rect.bottom);
-    DrawTextW(state.memDc, wide.c_str(), static_cast<int>(wide.size()), &rect, format);
+    int total = 0;
+    for (size_t pos = 0; pos < wide.size();) {
+      bool cjk = isChinese(wide, pos);
+      size_t end = pos + 1;
+      if (wide[pos] >= 0xD800 && wide[pos] <= 0xDBFF && end < wide.size()) ++end;
+      while (end < wide.size() && isChinese(wide, end) == cjk) {
+        size_t next = end + 1;
+        if (wide[end] >= 0xD800 && wide[end] <= 0xDBFF && next < wide.size()) ++next;
+        end = next;
+      }
+      HFONT runFont = fontFor(state, text.fontPx, cjk);
+      HGDIOBJ oldFont = SelectObject(state.memDc, runFont);
+      SIZE extent{};
+      GetTextExtentPoint32W(state.memDc, wide.data() + pos, static_cast<int>(end - pos), &extent);
+      total += extent.cx;
+      SelectObject(state.memDc, oldFont);
+      pos = end;
+    }
+    int x = text.x + (text.center ? std::max(0, (text.w - total) / 2) : 0);
+    for (size_t pos = 0; pos < wide.size();) {
+      bool cjk = isChinese(wide, pos);
+      size_t end = pos + 1;
+      if (wide[pos] >= 0xD800 && wide[pos] <= 0xDBFF && end < wide.size()) ++end;
+      while (end < wide.size() && isChinese(wide, end) == cjk) {
+        size_t next = end + 1;
+        if (wide[end] >= 0xD800 && wide[end] <= 0xDBFF && next < wide.size()) ++next;
+        end = next;
+      }
+      HFONT runFont = fontFor(state, text.fontPx, cjk);
+      HGDIOBJ oldFont = SelectObject(state.memDc, runFont);
+      RECT runRect{ x, text.y, text.x + text.w, text.y + text.h };
+      DrawTextW(state.memDc, wide.data() + pos, static_cast<int>(end - pos), &runRect,
+                (format & ~DT_CENTER) | DT_LEFT);
+      SIZE extent{};
+      GetTextExtentPoint32W(state.memDc, wide.data() + pos, static_cast<int>(end - pos), &extent);
+      x += extent.cx;
+      SelectObject(state.memDc, oldFont);
+      pos = end;
+    }
     RestoreDC(state.memDc, saved);
-    SelectObject(state.memDc, old);
   }
   BitBlt(target, 0, 0, frame.width, frame.height, state.memDc, 0, 0, SRCCOPY);
 }
@@ -313,10 +385,16 @@ INT_PTR CALLBACK scanChoiceProc(HWND dialog, UINT message, WPARAM wParam, LPARAM
   auto* choice = reinterpret_cast<ScanChoice*>(GetWindowLongPtrW(dialog, DWLP_USER));
   if (message == WM_INITDIALOG) {
     choice = reinterpret_cast<ScanChoice*>(lParam); SetWindowLongPtrW(dialog, DWLP_USER, lParam);
+    SetWindowTextW(dialog, utf8ToWide(zh::chooseSpaceTitle()).c_str());
+    SetDlgItemTextW(dialog, 203, utf8ToWide(zh::pathButton()).c_str());
+    SetDlgItemTextW(dialog, IDOK, utf8ToWide(zh::open()).c_str());
+    SetDlgItemTextW(dialog, 205, utf8ToWide(zh::pathPrompt()).c_str());
     HWND tab = GetDlgItem(dialog, 201);
     TCITEMW item{}; item.mask = TCIF_TEXT;
-    item.pszText = const_cast<wchar_t*>(L"驱动器或路径"); TabCtrl_InsertItem(tab, 0, &item);
-    item.pszText = const_cast<wchar_t*>(L"快照"); TabCtrl_InsertItem(tab, 1, &item);
+    std::wstring drivesTab = utf8ToWide(zh::drivesOrPath());
+    std::wstring snapshotTab = utf8ToWide(zh::snapshot());
+    item.pszText = drivesTab.data(); TabCtrl_InsertItem(tab, 0, &item);
+    item.pszText = snapshotTab.data(); TabCtrl_InsertItem(tab, 1, &item);
     HWND list = GetDlgItem(dialog, 202);
     ListView_SetIconSpacing(list, 96, 78);
     for (size_t i = 0; i < choice->drives.size(); ++i) {
@@ -341,8 +419,9 @@ INT_PTR CALLBACK scanChoiceProc(HWND dialog, UINT message, WPARAM wParam, LPARAM
     if (info->idFrom == 201 && info->code == TCN_SELCHANGE) {
       choice->snapshot = TabCtrl_GetCurSel(GetDlgItem(dialog,201)) == 1;
       ShowWindow(GetDlgItem(dialog,202), choice->snapshot ? SW_HIDE : SW_SHOW);
-      SetDlgItemTextW(dialog,205,choice->snapshot ? L"选择 SpaceViewer 快照 (.svs)，离线查看扫描结果" : L"双击磁盘开始，或输入路径后按开始");
-      SetDlgItemTextW(dialog,203,choice->snapshot ? L"选择快照..." : L"路径(&P)...");
+      SetDlgItemTextW(dialog,205,choice->snapshot ? utf8ToWide(zh::snapshotHelp()).c_str() : utf8ToWide(zh::pathPrompt()).c_str());
+      SetDlgItemTextW(dialog,203,choice->snapshot ? utf8ToWide(zh::chooseSnapshot()).c_str() : utf8ToWide(zh::pathButton()).c_str());
+      SetDlgItemTextW(dialog,IDOK,choice->snapshot ? utf8ToWide(zh::openSnapshot()).c_str() : utf8ToWide(zh::open()).c_str());
       SetDlgItemTextW(dialog,204,L"");
       return TRUE;
     }
@@ -374,7 +453,7 @@ INT_PTR CALLBACK scanChoiceProc(HWND dialog, UINT message, WPARAM wParam, LPARAM
       wchar_t path[32768]; GetDlgItemTextW(dialog,204,path,32768);
       DWORD attr = GetFileAttributesW(path);
       if (attr == INVALID_FILE_ATTRIBUTES || (!choice->snapshot && !(attr & FILE_ATTRIBUTE_DIRECTORY))) {
-        MessageBoxW(dialog,L"请选择可访问的磁盘、文件夹或快照。",L"选择您的空间",MB_OK|MB_ICONINFORMATION); return TRUE;
+        MessageBoxW(dialog,utf8ToWide(zh::accessDenied()).c_str(),utf8ToWide(zh::chooseSpaceTitle()).c_str(),MB_OK|MB_ICONINFORMATION); return TRUE;
       }
       choice->path = wideToUtf8(path); EndDialog(dialog,1); return TRUE;
     }
@@ -393,6 +472,13 @@ INT_PTR CALLBACK optionsProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lP
   auto* options = reinterpret_cast<ViewOptions*>(GetWindowLongPtrW(dialog,DWLP_USER));
   if (message == WM_INITDIALOG) {
     options = reinterpret_cast<ViewOptions*>(lParam); SetWindowLongPtrW(dialog,DWLP_USER,lParam);
+    SetWindowTextW(dialog, utf8ToWide(zh::configure()).c_str());
+    SetDlgItemTextW(dialog,211,utf8ToWide(zh::optionsFileGroups()).c_str());
+    SetDlgItemTextW(dialog,212,utf8ToWide(zh::optionsShowFree()).c_str());
+    SetDlgItemTextW(dialog,213,utf8ToWide(zh::optionsShowUnknown()).c_str());
+    SetWindowTextW(GetDlgItem(dialog,-1),utf8ToWide(zh::optionsDetail()).c_str());
+    SetDlgItemTextW(dialog,IDOK,utf8ToWide(zh::ok()).c_str());
+    SetDlgItemTextW(dialog,IDCANCEL,utf8ToWide(zh::cancel()).c_str());
     CheckDlgButton(dialog,211,options->fileGroups ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog,212,options->showFree ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog,213,options->showUnknown ? BST_CHECKED : BST_UNCHECKED);
@@ -417,37 +503,37 @@ HMENU mainMenu() {
     AppendMenuW(menu,MF_STRING,1000+static_cast<int>(kind),name);
   };
   HMENU file = CreatePopupMenu();
-  action(file,L"选择扫描路径...\tCtrl+O",HotKind::Open);
-  AppendMenuW(file,MF_STRING,900,L"新窗口\tCtrl+N");
-  AppendMenuW(file,MF_STRING,901,L"打开快照...");
-  AppendMenuW(file,MF_STRING,902,L"保存快照...");
-  action(file,L"导出当前视图 CSV...",HotKind::Export);
+  action(file,utf8ToWide(zh::scanPathMenu()).c_str(),HotKind::Open);
+  AppendMenuW(file,MF_STRING,900,utf8ToWide(zh::newWindow()).c_str());
+  AppendMenuW(file,MF_STRING,901,utf8ToWide(zh::openSnapshot()).c_str());
+  AppendMenuW(file,MF_STRING,902,utf8ToWide(zh::saveSnapshot()).c_str());
+  action(file,utf8ToWide(zh::exportCurrentCsv()).c_str(),HotKind::Export);
   AppendMenuW(file,MF_SEPARATOR,0,nullptr);
-  action(file,L"重新扫描\tF5",HotKind::Rescan);
-  action(file,L"刷新选中区域",HotKind::FocusRescan);
-  action(file,L"停止扫描",HotKind::Stop);
-  action(file,L"关闭视图",HotKind::CloseView);
-  AppendMenuW(file,MF_STRING,903,L"退出");
-  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(file),L"文件(&F)");
-  HMENU edit = CreatePopupMenu(); action(edit,L"配置...",HotKind::Configure);
-  AppendMenuW(edit,MF_STRING,904,L"复制当前路径");
-  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(edit),L"编辑(&E)");
+  action(file,utf8ToWide(std::string(zh::rescan())+"\tF5").c_str(),HotKind::Rescan);
+  action(file,utf8ToWide(zh::refreshSelection()).c_str(),HotKind::FocusRescan);
+  action(file,utf8ToWide(zh::stop()).c_str(),HotKind::Stop);
+  action(file,utf8ToWide(zh::closeView()).c_str(),HotKind::CloseView);
+  AppendMenuW(file,MF_STRING,903,utf8ToWide(zh::quit()).c_str());
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(file),utf8ToWide(zh::fileMenu()).c_str());
+  HMENU edit = CreatePopupMenu(); action(edit,utf8ToWide(zh::configure()).c_str(),HotKind::Configure);
+  AppendMenuW(edit,MF_STRING,904,utf8ToWide(zh::copyCurrentPath()).c_str());
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(edit),utf8ToWide(zh::editMenu()).c_str());
   HMENU view = CreatePopupMenu();
-  action(view,L"后退\tAlt+Left",HotKind::Back); action(view,L"前进\tAlt+Right",HotKind::Forward);
-  action(view,L"向上\tAlt+Up",HotKind::Up); action(view,L"扫描根目录\tCtrl+Home",HotKind::Home);
+  action(view,utf8ToWide(std::string(zh::back())+"\tAlt+Left").c_str(),HotKind::Back); action(view,utf8ToWide(std::string(zh::forward())+"\tAlt+Right").c_str(),HotKind::Forward);
+  action(view,utf8ToWide(std::string(zh::up())+"\tAlt+Up").c_str(),HotKind::Up); action(view,utf8ToWide(zh::homeRoot()).c_str(),HotKind::Home);
   AppendMenuW(view,MF_SEPARATOR,0,nullptr);
-  action(view,L"减少细节\tCtrl+-",HotKind::LessDetail); action(view,L"增加细节\tCtrl++",HotKind::MoreDetail);
-  action(view,L"按文件类型着色\tCtrl+G",HotKind::FileGroups);
-  action(view,L"显示可用空间\tCtrl+F",HotKind::ShowFree);
-  action(view,L"显示未知空间\tCtrl+U",HotKind::ShowUnknown);
+  action(view,utf8ToWide(zh::lessDetail()).c_str(),HotKind::LessDetail); action(view,utf8ToWide(zh::moreDetail()).c_str(),HotKind::MoreDetail);
+  action(view,utf8ToWide(zh::colorByType()).c_str(),HotKind::FileGroups);
+  action(view,utf8ToWide(zh::showFree()).c_str(),HotKind::ShowFree);
+  action(view,utf8ToWide(zh::showUnknown()).c_str(),HotKind::ShowUnknown);
   AppendMenuW(view,MF_SEPARATOR,0,nullptr);
-  AppendMenuW(view,MF_STRING,909,L"水平平铺"); AppendMenuW(view,MF_STRING,910,L"垂直平铺");
-  AppendMenuW(view,MF_STRING,911,L"层叠窗口"); AppendMenuW(view,MF_STRING,912,L"全部最小化");
-  AppendMenuW(view,MF_STRING,905,L"最小化窗口"); AppendMenuW(view,MF_STRING,906,L"还原窗口");
-  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(view),L"窗口(&W)");
-  HMENU help = CreatePopupMenu(); AppendMenuW(help,MF_STRING,907,L"筛选与快捷键");
-  AppendMenuW(help,MF_STRING,908,L"关于 SpaceViewer");
-  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(help),L"帮助(&H)");
+  AppendMenuW(view,MF_STRING,909,utf8ToWide(zh::tileHorizontal()).c_str()); AppendMenuW(view,MF_STRING,910,utf8ToWide(zh::tileVertical()).c_str());
+  AppendMenuW(view,MF_STRING,911,utf8ToWide(zh::cascade()).c_str()); AppendMenuW(view,MF_STRING,912,utf8ToWide(zh::minimizeAll()).c_str());
+  AppendMenuW(view,MF_STRING,905,utf8ToWide(zh::minimize()).c_str()); AppendMenuW(view,MF_STRING,906,utf8ToWide(zh::restore()).c_str());
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(view),utf8ToWide(zh::windowMenu()).c_str());
+  HMENU help = CreatePopupMenu(); AppendMenuW(help,MF_STRING,907,utf8ToWide(zh::helpTitle()).c_str());
+  AppendMenuW(help,MF_STRING,908,utf8ToWide(zh::aboutTitle()).c_str());
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(help),utf8ToWide(zh::helpMenu()).c_str());
   return bar;
 }
 
@@ -602,14 +688,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                            nullptr,static_cast<UINT>(windows.size()),windows.data());
         }
         else if (command == 907) MessageBoxW(hwnd,
-          L"单击目录原地展开，双击进入；Backspace / Alt+Up 向上。\n"
-          L"Ctrl+O 选择扫描；Ctrl+N 新窗口；Ctrl+Home 根目录；F5 重扫。\n"
-          L"Ctrl+- / Ctrl++ 调节细节；Ctrl+G 文件类型；Ctrl+F 可用空间；Ctrl+U 未知空间。\n"
-          L"包含、排除支持 *.jpg;*.tmp 等通配符，最小大小支持 1M、1.5G。\n"
-          L"快照使用 SpaceViewer .svs 格式，打开后离线查看，不监听磁盘。",
-          L"筛选与快捷键",MB_OK|MB_ICONINFORMATION);
-        else if (command == 908) MessageBoxW(hwnd,L"SpaceViewer\n磁盘占用矩形树图查看器\nGPL-3.0",
-                                              L"关于 SpaceViewer",MB_OK|MB_ICONINFORMATION);
+          utf8ToWide(zh::helpBody()).c_str(),
+          utf8ToWide(zh::helpTitle()).c_str(),MB_OK|MB_ICONINFORMATION);
+        else if (command == 908) MessageBoxW(hwnd,utf8ToWide(zh::aboutBody()).c_str(),
+                                              utf8ToWide(zh::aboutTitle()).c_str(),MB_OK|MB_ICONINFORMATION);
         InvalidateRect(hwnd,nullptr,FALSE);
       }
       return 0;
@@ -754,6 +836,7 @@ int spaceviewer_main(int, char**) {
   InitCommonControlsEx(&controls);
   HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   WinState state;
+  loadBundledFonts(state);
   wchar_t appData[MAX_PATH];
   if (SUCCEEDED(SHGetFolderPathW(nullptr,CSIDL_APPDATA,nullptr,SHGFP_TYPE_CURRENT,appData))) {
     std::wstring dir = std::wstring(appData) + L"\\SpaceViewer";
@@ -818,6 +901,7 @@ int spaceviewer_main(int, char**) {
     DispatchMessageW(&message);
   }
   for (HFONT font : state.fonts) DeleteObject(font);
+  for (const std::wstring& path : state.registeredFontPaths) RemoveFontResourceExW(path.c_str(), FR_PRIVATE, nullptr);
   if (state.memDc) {
     SelectObject(state.memDc, state.oldBitmap);
     DeleteObject(state.bitmap);
