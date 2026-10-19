@@ -1039,6 +1039,54 @@ void Scanner::start(const std::string& utf8Path) {
   impl->worker = std::thread([this]() { impl->threadMain(); });
 }
 
+void Scanner::refreshSubtree(uint32_t index) {
+  auto current = snapshot();
+  if (!current || index >= current->nodes.size() || !(current->nodes[index].flags & kDir)) return;
+  if (index == 0) { start(current->rootPath); return; }
+  impl->join();
+  std::string path = nodePath(*current,index);
+  {
+    std::lock_guard<std::mutex> lock(impl->treeMu);
+    uint64_t files = 0, dirs = 0;
+    countSubtree(impl->live,index,files,dirs);
+    bubble(impl->live,index,-static_cast<int64_t>(impl->live.nodes[index].size));
+    impl->live.files -= std::min(files,impl->live.files);
+    impl->live.dirs -= std::min(dirs > 0 ? dirs-1 : 0,impl->live.dirs);
+    Node& node = impl->live.nodes[index];
+    node.firstChild = node.lastChild = kNone; node.childCount = 0;
+    impl->live.running = true; impl->live.complete = false; impl->live.aborted = false;
+  }
+  impl->cancel = false; impl->runningFlag = true;
+  impl->started = std::chrono::steady_clock::now(); impl->lastPub = {};
+  impl->publish(true);
+  impl->worker = std::thread([this,index,path]() {
+#if defined(_WIN32)
+    impl->scanWindows(index,utf8ToWide(path),false);
+#else
+    impl->scanPosix(index,path,false);
+#endif
+    {
+      std::lock_guard<std::mutex> lock(impl->treeMu);
+      impl->live.running = false; impl->live.complete = true; impl->live.aborted = impl->cancel.load();
+      impl->live.changed = {index}; ++impl->live.changeGen;
+    }
+    impl->runningFlag = false; impl->publish(true);
+    if (!impl->cancel.load()) impl->watch();
+  });
+}
+
+void Scanner::loadSnapshot(TreeSnapshot tree) {
+  impl->join();
+  tree.complete = true;
+  tree.running = false;
+  tree.changeGen = 0;
+  tree.changed.clear();
+  impl->runningFlag = false;
+  impl->started = std::chrono::steady_clock::now();
+  { std::lock_guard<std::mutex> lock(impl->treeMu); impl->live = std::move(tree); }
+  impl->publish(true);
+}
+
 void Scanner::requestStop() { impl->cancel = true; }
 
 bool Scanner::running() const { return impl->runningFlag.load(); }

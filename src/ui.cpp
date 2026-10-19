@@ -108,6 +108,7 @@ void toolbarIcon(Frame& frame, int x, int y, int size, HotKind kind, uint32_t in
     }
     case HotKind::Up:
       line(.5,.83,.5,.17); line(.5,.17,.2,.47); line(.5,.17,.8,.47); break;
+    case HotKind::FocusRescan:
     case HotKind::Rescan:
       for (int i=0;i<32;++i) {
         double a=(35+i*9)*3.141592653589793/180, b=(35+(i+1)*9)*3.141592653589793/180;
@@ -119,6 +120,19 @@ void toolbarIcon(Frame& frame, int x, int y, int size, HotKind kind, uint32_t in
     case HotKind::Export:
       line(.18,.51,.18,.84); line(.18,.84,.83,.84); line(.83,.84,.83,.51);
       line(.5,.65,.5,.12); line(.5,.12,.27,.35); line(.5,.12,.73,.35); break;
+    case HotKind::Home:
+      line(.12,.43,.5,.13); line(.5,.13,.88,.43); box(.24,.43,.52,.42); break;
+    case HotKind::LessDetail: case HotKind::MoreDetail:
+      box(.14,.14,.72,.72); line(.3,.5,.7,.5);
+      if (kind == HotKind::MoreDetail) line(.5,.3,.5,.7); break;
+    case HotKind::FileGroups:
+      box(.12,.12,.34,.34); box(.54,.12,.34,.34); box(.12,.54,.34,.34); box(.54,.54,.34,.34); break;
+    case HotKind::ShowFree:
+      box(.15,.2,.7,.6); line(.5,.2,.5,.8); break;
+    case HotKind::ShowUnknown:
+      box(.15,.2,.7,.6); line(.38,.38,.6,.38); line(.6,.38,.5,.53); line(.5,.68,.5,.7); break;
+    case HotKind::Configure:
+      for (int i=0;i<3;++i) { double yy=.25+i*.25; line(.12,yy,.88,yy); box(.3+i*.12,yy-.08,.12,.16); } break;
     default: break;
   }
 }
@@ -212,10 +226,27 @@ void editKey(Edit& edit, const Input& input) {
   if (!input.typed.empty()) insertText(edit, input.typed);
 }
 
+// Small tiles need useful prefixes, rather than an ellipsis consuming most
+// of the available width. Keep complete UTF-8 code points, including CJK.
+std::string compactTileText(const std::string& text, int width, int fontPx) {
+  double used = 0;
+  size_t end = 0;
+  while (end < text.size()) {
+    size_t next = utf8Next(text, end);
+    unsigned char c = static_cast<unsigned char>(text[end]);
+    double advance = fontPx * (c >= 128 ? 1.0 : c == 'i' || c == 'l' || c == '.' ? 0.3 : 0.58);
+    if (used + advance > width - 1) break;
+    used += advance;
+    end = next;
+  }
+  return text.substr(0, end);
+}
+
 std::string tileLabel(const TreeSnapshot& tree, const Tile& tile) {
   if (tile.mergeCount > 0) {
     return std::string("\u5176\u4f59 ") + formatCount(tile.mergeCount) + " \u9879";
   }
+  if (tile.flags & kFree) return zh::freeSpace();
   if (tile.index == kNone || tile.index >= tree.nodes.size()) return {};
   if (tile.flags & kPending) return tree.complete ? std::string(zh::uncounted()) : std::string(zh::scanningRegion());
   if (tile.flags & kFree) return zh::freeSpace();
@@ -245,9 +276,11 @@ struct App::State {
   std::vector<Tile> tiles;
   TileMotion motion;
   bool frameAnim = false;
+  ViewOptions options;
+  bool archived = false;
   uint64_t seenChange = 0;
   std::unordered_map<uint32_t, double> changes;
-  uint32_t hovered = kNone;
+  uint64_t hovered = kNone;
   double hoverSince = 0;
   std::vector<uint32_t> back;
   std::vector<uint32_t> forward;
@@ -302,7 +335,13 @@ struct App::State {
     focus = Focus::None;
     path.text = pathText;
     path.cursor = path.text.size();
-    scanner.start(pathText);
+    archived = false;
+    if (globMatch(pathText, "*.svs")) {
+      TreeSnapshot loaded;
+      std::string error;
+      if (readSnapshot(pathText, loaded, error)) { scanner.loadSnapshot(std::move(loaded)); archived = true; }
+      else { std::lock_guard<std::mutex> lock(noteMu); note = error; noteUntil = 1e12; }
+    } else scanner.start(pathText);
   }
 
   Edit* focusedEdit() {
@@ -360,6 +399,28 @@ void App::setWake(std::function<void()> wake) {
 }
 
 void App::scanPath(const std::string& path) { state->scan(path); }
+
+ViewOptions App::options() const { return state->options; }
+void App::setOptions(const ViewOptions& options) {
+  state->options = options;
+  state->options.detail = std::max(0, std::min(6, options.detail));
+  state->snapLayout = true;
+}
+bool App::saveSnapshot(const std::string& path, std::string& error) const {
+  auto tree = state->scanner.snapshot();
+  if (!tree || tree->nodes.empty()) { error = "No scan to save"; return false; }
+  if (state->scanner.running()) { error = "Wait for the scan to finish before saving a snapshot"; return false; }
+  return writeSnapshot(*tree, path, error);
+}
+bool App::loadSnapshot(const std::string& path, std::string& error) {
+  TreeSnapshot tree;
+  if (!readSnapshot(path, tree, error)) return false;
+  state->back.clear(); state->forward.clear(); state->expanded.clear(); state->changes.clear();
+  state->view = 0; state->selected = kNone; state->seenChange = 0;
+  state->scanner.loadSnapshot(std::move(tree));
+  state->archived = true; state->snapLayout = true;
+  return true;
+}
 
 bool App::animating() const { return state->frameAnim; }
 
@@ -448,21 +509,23 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     s.scan(again);
   }
   if (input.openShortcut && host.pickFolder) {
-    std::string picked;
-    if (host.pickFolder(picked)) s.scan(picked);
+    if (host.newWindow && s.shown && !s.shown->nodes.empty()) host.newWindow();
+    else { std::string picked; if (host.pickFolder(picked)) s.scan(picked); }
   }
 
-  if (input.leftPressed || input.rightPressed) {
+  if (input.leftPressed || input.rightPressed || input.command >= 0) {
     int index = hitHot(s.hots, input.mouseX, input.mouseY);
-    const HotRect* hot = index >= 0 ? &s.hots[static_cast<size_t>(index)] : nullptr;
+    HotRect commandHot;
+    if (input.command >= 0) commandHot.kind = static_cast<HotKind>(input.command);
+    const HotRect* hot = input.command >= 0 ? &commandHot : index >= 0 ? &s.hots[static_cast<size_t>(index)] : nullptr;
     bool onPopup = hot && (hot->kind == HotKind::DriveItem || hot->kind == HotKind::Drives);
     if (!onPopup) s.driveOpen = false;
-    if (input.leftPressed) {
+    if (input.leftPressed || input.command >= 0) {
       double previousClick = s.lastClick;
       int previousX = s.lastX;
       int previousY = s.lastY;
       uint32_t previousSelected = s.selected;
-      bool second = s.lastZoom && (input.timeSec - s.lastClick) < 0.35 && std::abs(input.mouseX - s.lastX) < 6 &&
+      bool second = input.command < 0 && s.lastZoom && (input.timeSec - s.lastClick) < 0.35 && std::abs(input.mouseX - s.lastX) < 6 &&
                     std::abs(input.mouseY - s.lastY) < 6;
       s.lastClick = input.timeSec;
       s.lastX = input.mouseX;
@@ -480,6 +543,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
       } else {
         switch (hot->kind) {
           case HotKind::Open:
+            if (host.newWindow && s.shown && !s.shown->nodes.empty()) { host.newWindow(); break; }
             if (host.pickFolder) {
               std::string picked;
               if (host.pickFolder(picked)) s.scan(picked);
@@ -547,6 +611,27 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
               }
             }
             break;
+          case HotKind::Home: s.navigate(0); break;
+          case HotKind::FocusRescan: {
+            uint32_t id = s.selected == kNone ? s.view : s.selected;
+            if (s.shown && id < s.shown->nodes.size()) {
+              if (!(s.shown->nodes[id].flags & kDir)) id = s.shown->nodes[id].parent;
+              if (s.archived) { std::string path = s.pathOf(id); if (!path.empty()) s.scan(path); }
+              else s.scanner.refreshSubtree(id);
+            }
+            break;
+          }
+          case HotKind::LessDetail:
+            s.options.detail = std::max(0, s.options.detail - 1); s.expanded.clear(); s.snapLayout = true; break;
+          case HotKind::MoreDetail:
+            s.options.detail = std::min(6, s.options.detail + 1); s.snapLayout = true; break;
+          case HotKind::FileGroups: s.options.fileGroups = !s.options.fileGroups; break;
+          case HotKind::ShowFree: s.options.showFree = !s.options.showFree; s.snapLayout = true; break;
+          case HotKind::ShowUnknown: s.options.showUnknown = !s.options.showUnknown; s.snapLayout = true; break;
+          case HotKind::Configure: if (host.configure) host.configure(); break;
+          case HotKind::CloseView:
+            s.scanner.loadSnapshot(TreeSnapshot{}); s.view = 0; s.path.text.clear();
+            s.path.cursor = 0; s.selected = kNone; s.expanded.clear(); break;
           case HotKind::EditPath:
           case HotKind::EditInc:
           case HotKind::EditExc:
@@ -634,16 +719,16 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
 
   const int width = std::max(1, input.windowW);
   const int height = std::max(1, input.windowH);
-  frame.resize(width, height, 0xf3f5f7);
+  frame.resize(width, height, 0xf0f0f0);
   const int gap = scaled(input.dpi, 8);
   const int row1 = scaled(input.dpi, 64);
   const int row2 = scaled(input.dpi, 30);
   const int statusH = scaled(input.dpi, 26);
-  const bool pathBelow = width < scaled(input.dpi, 940);
+  const bool pathBelow = true;
   const int pathRow = pathBelow ? scaled(input.dpi, 32) + gap : 0;
   const int top = gap + row1 + gap + pathRow + row2 + gap;
   const int font = std::max(11, scaled(input.dpi, 13));
-  const int titlePx = std::max(12.0, static_cast<double>(scaled(input.dpi, 18)));
+  const int titlePx = std::max(12.0, static_cast<double>(scaled(input.dpi, 14)));
   fillRect(frame, 0, 0, width, top, 0xf8fafc);
   fillRect(frame, 0, gap + row1 + gap / 2, width, 1, 0xe5eaf0);
   fillRect(frame, 0, height - statusH, width, statusH, 0xe7ebf0);
@@ -662,20 +747,23 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     hot.driveIndex = drive;
     next.push_back(hot);
   };
-  const double toolScale = std::min(1.0, static_cast<double>(std::max(1, width - gap * 2)) /
-                                            (scaled(input.dpi, 528) + gap * 8));
+  const double toolScale = std::min(1.0, static_cast<double>(std::max(1, width - gap * 16)) /
+                                            scaled(input.dpi, 912));
   auto button = [&](int& x, int y, int w, int h, const char* label, HotKind kind, bool enabled) {
     w = std::max(1, static_cast<int>(w * toolScale));
     bool hover = enabled && input.mouseX >= x && input.mouseY >= y && input.mouseX < x + w && input.mouseY < y + h;
     const bool primary = kind == HotKind::Open;
-    uint32_t bg = hover ? 0xe5effa : primary ? 0xeaf2fc : 0xf8fafc;
+    const bool checked = (kind == HotKind::FileGroups && s.options.fileGroups) ||
+                         (kind == HotKind::ShowFree && s.options.showFree) ||
+                         (kind == HotKind::ShowUnknown && s.options.showUnknown);
+    uint32_t bg = hover ? 0xe5effa : (primary || checked) ? 0xeaf2fc : 0xf8fafc;
     roundRect(frame, x, y, w, h, scaled(input.dpi, 7), bg);
     uint32_t ink = !enabled ? 0xb6c0cc : kind == HotKind::Stop ? 0xc36b63 : 0x35658e;
-    int iconSize = scaled(input.dpi, 24);
+    int iconSize = std::max(12, std::min(scaled(input.dpi, 24), w - 8));
     toolbarIcon(frame, x + (w - iconSize) / 2, y + scaled(input.dpi, 7), iconSize, kind,
                 ink, enabled ? 0xd6e6f7 : 0xe9edf2);
     drawText(frame, x + 2, y + scaled(input.dpi, 36), w - 4, scaled(input.dpi, 24),
-             label, enabled ? 0x34465b : 0xaab5c1, font, true);
+             label, enabled ? 0x34465b : 0xaab5c1, std::min(font, std::max(8, w / 4)), true);
     if (enabled) addHot(x, y, w, h, kind);
     x += w + gap;
   };
@@ -686,14 +774,21 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   const bool hasTree = s.shown && !s.shown->nodes.empty();
   button(x, y, scaled(input.dpi, 64), row1, zh::open(), HotKind::Open, true);
   int driveX = x;
-  button(x, y, scaled(input.dpi, 64), row1, zh::drives(), HotKind::Drives, true);
   button(x, y, scaled(input.dpi, 64), row1, zh::back(), HotKind::Back, !s.back.empty());
   button(x, y, scaled(input.dpi, 64), row1, zh::forward(), HotKind::Forward, !s.forward.empty());
   button(x, y, scaled(input.dpi, 64), row1, zh::up(), HotKind::Up, hasTree && s.view != 0);
+  button(x, y, scaled(input.dpi, 56), row1, "\u6839\u76ee\u5f55", HotKind::Home, hasTree && s.view != 0);
   button(x, y, scaled(input.dpi, 80), row1, zh::rescan(), HotKind::Rescan, !s.path.text.empty());
   button(x, y, scaled(input.dpi, 64), row1, s.scanner.stopRequested() ? zh::stopping() : zh::stop(), HotKind::Stop,
          running);
   button(x, y, scaled(input.dpi, 64), row1, zh::exportCsv(), HotKind::Export, hasTree && !s.exportRunning);
+  button(x, y, scaled(input.dpi, 56), row1, "\u5c40\u90e8\u5237\u65b0", HotKind::FocusRescan, hasTree && !running);
+  button(x, y, scaled(input.dpi, 56), row1, "\u51cf\u5c11\u7ec6\u8282", HotKind::LessDetail, hasTree && s.options.detail > 0);
+  button(x, y, scaled(input.dpi, 56), row1, "\u589e\u52a0\u7ec6\u8282", HotKind::MoreDetail, hasTree && s.options.detail < 6);
+  button(x, y, scaled(input.dpi, 56), row1, "\u6587\u4ef6\u7c7b\u578b", HotKind::FileGroups, hasTree);
+  button(x, y, scaled(input.dpi, 56), row1, "\u53ef\u7528\u7a7a\u95f4", HotKind::ShowFree, hasTree);
+  button(x, y, scaled(input.dpi, 56), row1, "\u672a\u77e5\u7a7a\u95f4", HotKind::ShowUnknown, hasTree);
+  button(x, y, scaled(input.dpi, 56), row1, "\u914d\u7f6e", HotKind::Configure, static_cast<bool>(host.configure));
   int pathX = pathBelow ? gap : x + gap;
   int pathY = pathBelow ? gap + row1 + gap : y + scaled(input.dpi, 25);
   int pathH = scaled(input.dpi, 32);
@@ -735,7 +830,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   int mapY = top;
   int mapW = std::max(1, width - gap * 2);
   int mapH = std::max(1, height - statusH - top - gap);
-  fillRect(frame, mapX, mapY, mapW, mapH, 0xdfe6ee);
+  fillRect(frame, mapX, mapY, mapW, mapH, categoryColor(CatDir));
   if (hasTree) {
     // The view root is not a child tile. Reserve its title independently so
     // entering a file-only directory cannot remove the outer container header.
@@ -750,10 +845,30 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     addHot(mapX, mapY, mapW, rootTitleH, HotKind::Tile, s.view);
     RectF area{static_cast<double>(mapX), static_cast<double>(mapY + rootTitleH),
                static_cast<double>(mapW), static_cast<double>(std::max(0, mapH - rootTitleH))};
-    const int labelFont = std::max(9, font - 2);
-    const double minW = std::max(8, scaled(input.dpi, 8));
-    const double minH = std::max(8, scaled(input.dpi, 8));
-    std::vector<Tile> laid = layoutTreemap(*s.shown, s.visible, s.view, area, titlePx, minW, minH, s.expanded);
+    const int labelFont = std::max(9, scaled(input.dpi, 10));
+    const int compactFont = std::max(8, scaled(input.dpi, 8));
+    const double minW = compactFont * 2 + 4;
+    const double minH = compactFont + 4;
+    std::vector<uint64_t> layoutVisible = s.visible;
+    if (!s.options.showUnknown && s.shown->pending < layoutVisible.size()) {
+      uint64_t unknown = layoutVisible[s.shown->pending];
+      layoutVisible[s.shown->pending] = 0;
+      if (!layoutVisible.empty() && layoutVisible[0] >= unknown) layoutVisible[0] -= unknown;
+    }
+    RectF contentArea = area;
+    double freeWidth = 0;
+    if (s.options.showFree && s.view == 0 && s.shown->freeBytes) {
+      double used = layoutVisible.empty() ? 0 : static_cast<double>(layoutVisible[0]);
+      freeWidth = area.w * (static_cast<double>(s.shown->freeBytes) / (used + s.shown->freeBytes));
+      if (freeWidth < minW) freeWidth = 0;
+      contentArea.w -= freeWidth;
+    }
+    std::vector<Tile> laid = layoutTreemap(*s.shown, layoutVisible, s.view, contentArea,
+                                           titlePx, minW, minH, s.expanded, s.options.detail);
+    if (freeWidth >= minW) {
+      Tile free; free.flags = kFree; free.category = CatFree; free.size = s.shown->freeBytes;
+      free.outer = {area.x + contentArea.w, area.y, freeWidth, area.h}; laid.push_back(free);
+    }
     s.motion.setTarget(laid, input.timeSec, s.view, area, s.snapLayout);
     s.snapLayout = false;
     s.tiles = s.motion.sample(input.timeSec);
@@ -772,7 +887,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     // outgoing border cannot show through the incoming directory.
     const bool layered = std::any_of(s.tiles.begin(), s.tiles.end(),
                                      [](const Tile& tile) { return tile.exiting; });
-    const bool gpu = !layered && openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, dividerPx);
+    const bool gpu = !layered && openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, dividerPx, s.options.fileGroups);
     int hoverTile = -1;
     for (int i = 0; i < static_cast<int>(s.tiles.size()); ++i) {
       const Tile& tile = s.tiles[static_cast<size_t>(i)];
@@ -780,9 +895,9 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
       int ty = iFloor(tile.outer.y);
       int tw = iFloor(tile.outer.x + tile.outer.w) - tx;
       int th = iFloor(tile.outer.y + tile.outer.h) - ty;
-      if (tw <= 0 || th <= 0) continue;
+      if (tile.hidden || tw <= 0 || th <= 0) continue;
       if (!tile.exiting && input.mouseX >= tx && input.mouseY >= ty && input.mouseX < tx + tw && input.mouseY < ty + th) hoverTile = i;
-      uint32_t base = categoryColor(tile.flags & kDir ? CatDir : tile.category);
+      uint32_t base = categoryColor(tile.flags & kDir ? CatDir : s.options.fileGroups ? tile.category : CatOther);
       if (tile.flags & kFree) base = categoryColor(CatFree);
       if (tile.flags & kPending) base = 0xf5cba7;
       uint32_t topColor = shadeColor(base, 5);
@@ -813,26 +928,37 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
           }
         }
       }
-      if (labelVisible && tile.title.h >= font) {
+      const bool compact = tw < labelFont * 10 || th < labelFont * 4;
+      const int tileFont = compact ? compactFont : labelFont;
+      if (labelVisible && tile.title.h >= compactFont + 1) {
         int hy = iFloor(tile.title.y);
         int hh = iFloor(tile.title.y + tile.title.h) - hy;
-        int dh = std::min(dividerPx, std::max(1, hh / 5));
+        int dh = 1;
         int textH = hh - dh;
         if (!gpu) {
           fillRect(frame, tx, hy, tw, hh, titleColor);
           fillRect(frame, tx, hy + hh - dh, tw, dh, dividerColor);
         }
-        if (textH >= font && tw >= font * 3) {
+        int headerFont = tw < labelFont * 12 ? compactFont : labelFont;
+        if (textH >= headerFont && tw >= headerFont * 2 + 4) {
           std::string header = name;
-          if (tw >= font * 8) header += "  " + sizeText;
-          drawText(frame, tx + 4, hy, tw - 8, textH, header, labelColor, labelFont, false);
+          if (tw >= headerFont * 14) header += "  " + sizeText;
+          if (tw < headerFont * 10) header = compactTileText(header, tw - 4, headerFont);
+          drawText(frame, tx + 2, hy, tw - 4, textH, header, labelColor, headerFont, false);
         }
-      } else if (labelVisible && !tile.container && th >= labelFont * 2 + 8 && tw >= labelFont * 4) {
-        int line = labelFont + 1;
-        int block = line * 2;
-        int y0 = ty + std::max(0, (th - block) / 2);
-        drawText(frame, tx + 2, y0, tw - 4, line, name, labelColor, labelFont, true);
-        drawText(frame, tx + 2, y0 + line, tw - 4, line, sizeText, labelColor, labelFont, true);
+      } else if (labelVisible && !tile.container && tw >= tileFont * 2 + 2 && th >= tileFont + 2) {
+        std::string shortName = compact ? compactTileText(name, tw - 4, tileFont) : name;
+        if (th >= tileFont * 2 + 4) {
+          std::string compactSize = sizeText;
+          if (compact) compactSize.erase(std::remove(compactSize.begin(), compactSize.end(), ' '), compactSize.end());
+          int line = tileFont + 1;
+          int y0 = ty + (th - line * 2) / 2;
+          drawText(frame, tx + 2, y0, tw - 4, line, shortName, labelColor, tileFont, true);
+          if (tw >= tileFont * 4)
+            drawText(frame, tx + 2, y0 + line, tw - 4, line, compactSize, labelColor, tileFont, true);
+        } else {
+          drawText(frame, tx + 2, ty + 1, tw - 4, th - 2, shortName, labelColor, tileFont, true);
+        }
       }
       if (!tile.exiting) addHot(tx, ty, tw, th, HotKind::Tile, tile.mergeCount ? kNone : tile.index);
     }
@@ -856,12 +982,12 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
       int match = -1;
       while (id != kNone && id < s.shown->nodes.size()) {
         for (size_t i = 0; i < s.tiles.size(); ++i) {
-          if (!s.tiles[i].exiting && s.tiles[i].index == id) { match = static_cast<int>(i); break; }
+          if (!s.tiles[i].hidden && !s.tiles[i].exiting && s.tiles[i].index == id) { match = static_cast<int>(i); break; }
         }
         if (match >= 0 || id == s.view) break;
         // A hidden small file may live in an aggregate block.
         for (size_t i = 0; i < s.tiles.size(); ++i) {
-          if (!s.tiles[i].exiting && s.tiles[i].mergeCount &&
+          if (!s.tiles[i].hidden && !s.tiles[i].exiting && s.tiles[i].mergeCount &&
               s.tiles[i].parent == s.shown->nodes[id].parent) { match = static_cast<int>(i); break; }
         }
         if (match >= 0) break;
@@ -873,17 +999,19 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
       else if (id == s.view) brighten({static_cast<double>(mapX), static_cast<double>(mapY),
                                       static_cast<double>(mapW), static_cast<double>(rootTitleH)}, amount);
     }
-    uint32_t hovered = hoverTile >= 0 ? s.tiles[hoverTile].index : kNone;
+    uint64_t hovered = hoverTile < 0 ? static_cast<uint64_t>(kNone) :
+        s.tiles[hoverTile].index != kNone ? s.tiles[hoverTile].index :
+        (1ull << 63) | s.tiles[hoverTile].parent;
     if (s.hovered != hovered) { s.hovered = hovered; s.hoverSince = input.timeSec; }
     if (hoverTile >= 0) {
       double age = input.timeSec - s.hoverSince;
       brightness[hoverTile] = std::max(brightness[hoverTile],
-                                     static_cast<int>(age < 0.12 ? 22 - 14 * age / 0.12 : 8));
+                                     static_cast<int>(age < 0.12 ? 44 - 18 * age / 0.12 : 26));
       s.frameAnim = s.frameAnim || age < 0.12;
     }
     for (size_t i = 0; i < s.tiles.size(); ++i) {
-      if (!s.tiles[i].exiting && s.tiles[i].index == s.selected) brightness[i] = std::max(brightness[i], 5);
-      if (brightness[i] > 0) brighten(s.tiles[i].outer, brightness[i]);
+      if (!s.tiles[i].hidden && !s.tiles[i].exiting && s.tiles[i].index == s.selected) brightness[i] = std::max(brightness[i], 10);
+      if (!s.tiles[i].hidden && brightness[i] > 0) brighten(s.tiles[i].outer, brightness[i]);
     }
     if (s.tiles.empty()) {
       std::string message = s.filter.includeGlobs.empty() && s.filter.excludeGlobs.empty() && s.filter.minSize == 0
@@ -896,7 +1024,9 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     s.motion.setTarget({}, input.timeSec);
     s.frameAnim = s.motion.running(input.timeSec);
     std::string message = s.shown && !s.shown->error.empty() ? s.shown->error : zh::emptyHint();
-    drawText(frame, mapX + gap, mapY + mapH / 2 - font, mapW - gap * 2, font * 3, message, 0x34495e, font, true);
+    fillRect(frame, mapX, mapY, mapW, mapH, 0xf0f0f0);
+    if (s.shown && !s.shown->error.empty())
+      drawText(frame, mapX + gap, mapY + mapH / 2 - font, mapW - gap * 2, font * 3, message, 0x34495e, font, true);
   }
 
   std::string status;
@@ -942,7 +1072,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     } else if (s.shown->aborted) {
       status += zh::stopped();
     } else if (s.shown->complete) {
-      status += zh::scanDone();
+      status += s.archived ? "\u5feb\u7167 (\u79bb\u7ebf)" : zh::scanDone();
       if (s.shown->watchGap) {
         status += "   ";
         status += zh::watchGap();

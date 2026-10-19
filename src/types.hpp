@@ -90,6 +90,7 @@ struct Tile {
   double labelOpacity = 1;
   bool exiting = false;
   bool container = false;
+  bool hidden = false;
 };
 
 enum class HotKind {
@@ -106,7 +107,7 @@ enum class HotKind {
   EditExc,
   EditMin,
   DriveItem,
-  Tile
+  Tile, Home, FocusRescan, LessDetail, MoreDetail, FileGroups, ShowFree, ShowUnknown, Configure, CloseView
 };
 
 struct HotRect {
@@ -122,6 +123,7 @@ struct Input {
   float dpi = 96.f;
   int mouseX = 0;
   int mouseY = 0;
+  int command = -1;
   bool leftPressed = false;
   bool rightPressed = false;
   bool keyBackspace = false;
@@ -159,6 +161,13 @@ struct MenuRequest {
 
 enum class MenuCommand { None = 0, Open = 1, Reveal = 2, CopyPath = 3, Zoom = 4 };
 
+struct ViewOptions {
+  int detail = 2;
+  bool fileGroups = false;
+  bool showFree = false;
+  bool showUnknown = false;
+};
+
 struct Host {
   std::function<std::vector<VolumeEntry>()> volumes;
   std::function<bool(std::string& path)> pickFolder;
@@ -168,6 +177,8 @@ struct Host {
   std::function<void(const std::string& text)> setClipboard;
   std::function<std::string()> getClipboard;
   std::function<void(const std::string& title)> setTitle;
+  std::function<void()> configure;
+  std::function<void()> newWindow;
 };
 
 struct Frame {

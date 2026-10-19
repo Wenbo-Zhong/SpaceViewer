@@ -1,6 +1,7 @@
 #include "selftest.hpp"
 
 #include "app.hpp"
+#include "export.hpp"
 #include "layout.hpp"
 #include "motion.hpp"
 #include "scan.hpp"
@@ -117,6 +118,21 @@ int runSelfTest() {
   check(contained, "layout contained");
   check(area > 640.0 * 480.0 * 0.85, "layout area");
 
+  TreeSnapshot compactTree;
+  addNode(compactTree, kNone, "root", kDir, CatDir, 0);
+  addNode(compactTree, 0, "large.bin", 0, CatOther, 900);
+  uint32_t compactDir = addNode(compactTree, 0, "SmallApp", kDir, CatDir, 0);
+  addNode(compactTree, compactDir, "Library", 0, CatOther, 60);
+  addNode(compactTree, compactDir, "bin", 0, CatOther, 40);
+  accountBytes(compactTree, 0, 900);
+  accountBytes(compactTree, compactDir, 100);
+  auto compactTiles = layoutTreemap(compactTree, computeVisible(compactTree, Filter{}), 0,
+                                    RectF{0, 0, 600, 300}, 14, 8, 8);
+  bool compactExpanded = false;
+  for (const auto& tile : compactTiles)
+    if (tile.index == compactDir && tile.container && tile.outer.w < 100) compactExpanded = true;
+  check(compactExpanded, "small readable directories retain a title and show their contents");
+
   TreeSnapshot crowded;
   crowded.sep = '/';
   crowded.rootPath = "/c";
@@ -132,17 +148,36 @@ int runSelfTest() {
     if (tile.mergeCount) merged = true;
     if (tile.size <= 1) tiny++;
   }
-  check(!crowdedTiles.empty() && merged && tiny == 0, "tiny files aggregate");
-  uint64_t represented = 0;
+  check(crowdedTiles.size() == 1 && !merged && tiny == 0, "unreadable tail is omitted before layout");
+  check(crowdedTiles[0].size == 1000000 && crowdedVis[0] == 1000200,
+        "displayed file size and full directory total remain accurate");
   double covered = 0;
-  for (const Tile& tile : crowdedTiles) {
-    represented += tile.size;
-    covered += tile.outer.w * tile.outer.h;
-    double expected = 200.0 * 120.0 * static_cast<double>(tile.size) / 1000200.0;
-    check(std::abs(tile.outer.w * tile.outer.h - expected) < 0.001, "tile proportional bytes");
+  for (const Tile& tile : crowdedTiles) covered += tile.outer.w * tile.outer.h;
+  check(std::abs(covered - 24000.0) < 0.001, "readable children fill the complete parent without a tail gap");
+
+  TreeSnapshot dense;
+  addNode(dense, kNone, "dense", kDir, CatDir, 0);
+  for (int i = 0; i < 150; ++i) {
+    uint64_t bytes = 151 - i;
+    addNode(dense, 0, "item" + std::to_string(i), 0, CatOther, bytes);
+    accountBytes(dense, 0, bytes);
   }
-  check(represented == 1000200, "all bytes represented");
-  check(std::abs(covered - 24000.0) < 0.001, "tiles cover parent exactly");
+  for (RectF box : {RectF{0, 0, 200, 120}, RectF{0, 0, 70, 300}, RectF{0, 0, 400, 38}}) {
+    auto readableTiles = layoutTreemap(dense, computeVisible(dense, Filter{}), 0, box, 14, 20, 12);
+    double filled = 0;
+    uint64_t displayedTotal = 0;
+    for (const Tile& tile : readableTiles) displayedTotal += tile.size;
+    for (const Tile& tile : readableTiles) {
+      check(!tile.hidden && std::floor(tile.outer.w) >= 20 && std::floor(tile.outer.h) >= 12,
+            "all final rectangles have readable dimensions");
+      filled += tile.outer.w * tile.outer.h;
+      double expected = box.w * box.h * static_cast<double>(tile.size) / displayedTotal;
+      check(std::abs(tile.outer.w * tile.outer.h - expected) < 0.001,
+            "displayed siblings retain their relative proportions");
+    }
+    check(!readableTiles.empty() && readableTiles.size() < 150 && std::abs(filled - box.w * box.h) < 0.001,
+          "dense wide and narrow layouts have neither unreadable rectangles nor empty area");
+  }
 
   TreeSnapshot deep;
   addNode(deep, kNone, "root", kDir, CatDir, 0);
@@ -329,6 +364,35 @@ int runSelfTest() {
   }
   check(watchedShrink, "post-scan watcher tracks shrinking files");
 
+  uint32_t refreshIndex = kNone;
+  auto beforeRefresh = scanner.snapshot();
+  if (beforeRefresh) for (uint32_t i = 0; i < beforeRefresh->nodes.size(); ++i)
+    if (nodeName(*beforeRefresh,i) == "sub") refreshIndex = i;
+  scanner.refreshSubtree(refreshIndex);
+  for (int i = 0; i < 150 && scanner.running(); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  auto refreshed = scanner.snapshot();
+  check(refreshed && refreshed->complete && refreshed->rootPath == root &&
+        refreshed->nodes[0].size == 185 && refreshed->nodes[refreshIndex].size == 25,
+        "selected-subtree refresh retains scan root and updates ancestor totals");
+
+  std::string snapshotFile = root + sep + "scan.svs";
+  std::string snapshotError;
+  check(refreshed && writeSnapshot(*refreshed, snapshotFile, snapshotError), "save scan snapshot");
+  TreeSnapshot restored;
+  check(readSnapshot(snapshotFile, restored, snapshotError) && restored.rootPath == snap->rootPath &&
+        restored.nodes.size() == snap->nodes.size() && restored.nodes[0].size == snap->nodes[0].size,
+        "snapshot round trip preserves the complete directory tree and sizes");
+  writeFile(root + sep + "bad.svs", "SpaceViewer-Snapshot-1\ninvalid");
+  TreeSnapshot invalidSnapshot;
+  check(!readSnapshot(root + sep + "bad.svs", invalidSnapshot, snapshotError), "invalid snapshot rejected");
+#if defined(_WIN32)
+  DeleteFileW(utf8ToWide(snapshotFile).c_str());
+  DeleteFileW(utf8ToWide(root + sep + "bad.svs").c_str());
+#else
+  std::remove(snapshotFile.c_str()); std::remove((root + sep + "bad.svs").c_str());
+#endif
+
   App clickApp;
   Host clickHost;
   std::string clickTitle;
@@ -395,7 +459,7 @@ int runSelfTest() {
     if (text.utf8 == "c.txt") { sampleX = text.x + text.w / 2; sampleY = text.y; }
   }
   if (sampleX >= 0 && sampleY >= 0) {
-    auto pixelAt = [&]() { return clickFrame.bgra[static_cast<size_t>(sampleY) * clickFrame.width + sampleX] & 255; };
+    auto pixelAt = [&]() { return (clickFrame.bgra[static_cast<size_t>(sampleY) * clickFrame.width + sampleX] >> 16) & 255; };
     uint32_t baseBrightness = pixelAt();
     clickInput.mouseX = sampleX; clickInput.mouseY = sampleY; clickInput.timeSec = 6.01;
     clickApp.update(clickInput, clickHost, clickFrame);
@@ -406,10 +470,33 @@ int runSelfTest() {
     check(peakBrightness > settledBrightness && settledBrightness > baseBrightness,
           "hover peaks then settles above ordinary brightness");
     check(!clickApp.animating(), "settled hover does not continuously repaint");
-    clickInput.mouseX = -1; clickInput.mouseY = -1; clickInput.timeSec = 6.3;
+    check(settledBrightness >= baseBrightness + 20, "held hover remains clearly brighter than ordinary tiles");
+    clickInput.timeSec = 6.8;
+    clickApp.update(clickInput, clickHost, clickFrame);
+    check(pixelAt() == settledBrightness, "held hover stays highlighted after the initial pulse");
+    clickInput.mouseX = -1; clickInput.mouseY = -1; clickInput.timeSec = 6.9;
     clickApp.update(clickInput, clickHost, clickFrame);
     check(pixelAt() == baseBrightness, "leaving hover restores original brightness");
   } else check(false, "hover brightness fixture visible");
+
+  ViewOptions viewOptions = clickApp.options();
+  int oldDetail = viewOptions.detail;
+  clickInput.command = static_cast<int>(HotKind::MoreDetail); clickInput.timeSec = 7;
+  clickApp.update(clickInput, clickHost, clickFrame);
+  check(clickApp.options().detail == oldDetail + 1, "toolbar and menu command increase detail");
+  clickInput.command = static_cast<int>(HotKind::FileGroups);
+  clickApp.update(clickInput, clickHost, clickFrame);
+  check(clickApp.options().fileGroups, "file group command enables type colors");
+  clickInput.command = static_cast<int>(HotKind::ShowFree);
+  clickApp.update(clickInput, clickHost, clickFrame);
+  check(clickApp.options().showFree, "free-space command toggles display option");
+  clickInput.command = static_cast<int>(HotKind::ShowUnknown);
+  clickApp.update(clickInput, clickHost, clickFrame);
+  check(clickApp.options().showUnknown, "unknown-space command toggles display option");
+  clickInput.command = static_cast<int>(HotKind::Home);
+  clickApp.update(clickInput, clickHost, clickFrame);
+  check(clickTitle == overviewTitle, "home command returns to original scan root");
+  clickInput.command = -1;
 
   std::FILE* end = std::fopen("selftest-result.txt", "wb");
   if (end) {

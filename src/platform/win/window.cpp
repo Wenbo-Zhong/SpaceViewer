@@ -16,7 +16,10 @@
 #include <objbase.h>
 #include <shellapi.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 #include <windowsx.h>
+#include <commctrl.h>
+#include <commdlg.h>
 
 #include <cstdint>
 #include <cstring>
@@ -27,6 +30,8 @@ namespace {
 
 struct WinState {
   App app;
+  bool rendering = false;
+  std::wstring configPath;
   HWND hwnd = nullptr;
   Input input;
   Host host;
@@ -79,6 +84,7 @@ int windowDpi(HWND hwnd) {
 }
 
 void clearEdges(Input& input) {
+  input.command = -1;
   input.leftPressed = false;
   input.rightPressed = false;
   input.keyBackspace = false;
@@ -162,6 +168,9 @@ void present(WinState& state, const Frame& frame, HDC target) {
 }
 
 void redraw(WinState& state) {
+  if (state.rendering) return;
+  state.rendering = true;
+  struct RenderGuard { bool& flag; ~RenderGuard() { flag = false; } } guard{state.rendering};
   RECT rect{};
   GetClientRect(state.hwnd, &rect);
   state.input.windowW = rect.right - rect.left;
@@ -287,6 +296,161 @@ bool showSave(HWND hwnd, std::string& path) {
   return ok;
 }
 
+
+std::wstring pickSnapshot(HWND owner, bool save) {
+  wchar_t buffer[32768] = {};
+  OPENFILENAMEW file{}; file.lStructSize = sizeof(file); file.hwndOwner = owner;
+  file.lpstrFilter = L"SpaceViewer snapshot (*.svs)\0*.svs\0\0";
+  file.lpstrFile = buffer; file.nMaxFile = 32768; file.lpstrDefExt = L"svs";
+  file.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST |
+               (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+  return (save ? GetSaveFileNameW(&file) : GetOpenFileNameW(&file)) ? buffer : L"";
+}
+
+std::vector<VolumeEntry> listVolumes();
+struct ScanChoice { std::string path; std::vector<VolumeEntry> drives; bool snapshot = false; };
+INT_PTR CALLBACK scanChoiceProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+  auto* choice = reinterpret_cast<ScanChoice*>(GetWindowLongPtrW(dialog, DWLP_USER));
+  if (message == WM_INITDIALOG) {
+    choice = reinterpret_cast<ScanChoice*>(lParam); SetWindowLongPtrW(dialog, DWLP_USER, lParam);
+    HWND tab = GetDlgItem(dialog, 201);
+    TCITEMW item{}; item.mask = TCIF_TEXT;
+    item.pszText = const_cast<wchar_t*>(L"驱动器或路径"); TabCtrl_InsertItem(tab, 0, &item);
+    item.pszText = const_cast<wchar_t*>(L"快照"); TabCtrl_InsertItem(tab, 1, &item);
+    HWND list = GetDlgItem(dialog, 202);
+    ListView_SetIconSpacing(list, 96, 78);
+    for (size_t i = 0; i < choice->drives.size(); ++i) {
+      std::wstring path = utf8ToWide(choice->drives[i].path);
+      SHFILEINFOW info{};
+      auto images = reinterpret_cast<HIMAGELIST>(SHGetFileInfoW(path.c_str(), 0, &info, sizeof(info), SHGFI_SYSICONINDEX | SHGFI_LARGEICON));
+      if (images) ListView_SetImageList(list, images, LVSIL_NORMAL);
+      std::wstring label = L"(" + path.substr(0,2) + L")";
+      LVITEMW entry{}; entry.mask = LVIF_TEXT | LVIF_IMAGE; entry.iItem = static_cast<int>(i);
+      entry.pszText = label.data(); entry.iImage = info.iIcon; ListView_InsertItem(list, &entry);
+      ListView_SetItemPosition(list,static_cast<int>(i),16+static_cast<int>(i)*96,12);
+    }
+    SetDlgItemTextW(dialog, 204, utf8ToWide(choice->path).c_str());
+    RECT parent{}, rect{}; GetWindowRect(GetParent(dialog), &parent); GetWindowRect(dialog, &rect);
+    SetWindowPos(dialog, nullptr, parent.left + ((parent.right-parent.left)-(rect.right-rect.left))/2,
+                 parent.top + ((parent.bottom-parent.top)-(rect.bottom-rect.top))/2, 0,0,SWP_NOSIZE|SWP_NOZORDER);
+    return TRUE;
+  }
+  if (!choice) return FALSE;
+  if (message == WM_NOTIFY) {
+    auto* info = reinterpret_cast<NMHDR*>(lParam);
+    if (info->idFrom == 201 && info->code == TCN_SELCHANGE) {
+      choice->snapshot = TabCtrl_GetCurSel(GetDlgItem(dialog,201)) == 1;
+      ShowWindow(GetDlgItem(dialog,202), choice->snapshot ? SW_HIDE : SW_SHOW);
+      SetDlgItemTextW(dialog,205,choice->snapshot ? L"选择 SpaceViewer 快照 (.svs)，离线查看扫描结果" : L"双击磁盘开始，或输入路径后按开始");
+      SetDlgItemTextW(dialog,203,choice->snapshot ? L"选择快照..." : L"路径(&P)...");
+      SetDlgItemTextW(dialog,204,L"");
+      return TRUE;
+    }
+    if (info->idFrom == 202 && (info->code == LVN_ITEMCHANGED || info->code == NM_DBLCLK)) {
+      int selected = ListView_GetNextItem(GetDlgItem(dialog,202),-1,LVNI_SELECTED);
+      if (selected >= 0 && selected < static_cast<int>(choice->drives.size())) {
+        const auto& drive = choice->drives[selected];
+        SetDlgItemTextW(dialog,204,utf8ToWide(drive.path).c_str());
+        std::string summary = formatSize(drive.free) + " / " + formatSize(drive.total);
+        SetDlgItemTextW(dialog,205,utf8ToWide(summary).c_str());
+        if (info->code == NM_DBLCLK) SendMessageW(dialog,WM_COMMAND,IDOK,0);
+      }
+      return TRUE;
+    }
+  }
+  if (message == WM_COMMAND) {
+    if (LOWORD(wParam) == IDCANCEL) { EndDialog(dialog,0); return TRUE; }
+    if (LOWORD(wParam) == 203) {
+      if (choice->snapshot) {
+        std::wstring path = pickSnapshot(dialog,false);
+        if (!path.empty()) SetDlgItemTextW(dialog,204,path.c_str());
+      } else {
+        std::string path;
+        if (showFolder(dialog,path)) SetDlgItemTextW(dialog,204,utf8ToWide(path).c_str());
+      }
+      return TRUE;
+    }
+    if (LOWORD(wParam) == IDOK) {
+      wchar_t path[32768]; GetDlgItemTextW(dialog,204,path,32768);
+      DWORD attr = GetFileAttributesW(path);
+      if (attr == INVALID_FILE_ATTRIBUTES || (!choice->snapshot && !(attr & FILE_ATTRIBUTE_DIRECTORY))) {
+        MessageBoxW(dialog,L"请选择可访问的磁盘、文件夹或快照。",L"选择您的空间",MB_OK|MB_ICONINFORMATION); return TRUE;
+      }
+      choice->path = wideToUtf8(path); EndDialog(dialog,1); return TRUE;
+    }
+  }
+  return FALSE;
+}
+bool showScanChoice(HWND owner, std::string& path) {
+  ScanChoice choice; choice.path = path; choice.drives = listVolumes();
+  bool ok = DialogBoxParamW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(200),owner,scanChoiceProc,
+                             reinterpret_cast<LPARAM>(&choice)) == 1;
+  if (ok) path = choice.path;
+  return ok;
+}
+
+INT_PTR CALLBACK optionsProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+  auto* options = reinterpret_cast<ViewOptions*>(GetWindowLongPtrW(dialog,DWLP_USER));
+  if (message == WM_INITDIALOG) {
+    options = reinterpret_cast<ViewOptions*>(lParam); SetWindowLongPtrW(dialog,DWLP_USER,lParam);
+    CheckDlgButton(dialog,211,options->fileGroups ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog,212,options->showFree ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog,213,options->showUnknown ? BST_CHECKED : BST_UNCHECKED);
+    SetDlgItemInt(dialog,214,options->detail,FALSE); return TRUE;
+  }
+  if (message == WM_COMMAND && options) {
+    if (LOWORD(wParam) == IDCANCEL) { EndDialog(dialog,0); return TRUE; }
+    if (LOWORD(wParam) == IDOK) {
+      options->fileGroups = IsDlgButtonChecked(dialog,211) == BST_CHECKED;
+      options->showFree = IsDlgButtonChecked(dialog,212) == BST_CHECKED;
+      options->showUnknown = IsDlgButtonChecked(dialog,213) == BST_CHECKED;
+      options->detail = std::max(0,std::min(6,static_cast<int>(GetDlgItemInt(dialog,214,nullptr,FALSE))));
+      EndDialog(dialog,1); return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+HMENU mainMenu() {
+  HMENU bar = CreateMenu();
+  auto action = [](HMENU menu, const wchar_t* name, HotKind kind) {
+    AppendMenuW(menu,MF_STRING,1000+static_cast<int>(kind),name);
+  };
+  HMENU file = CreatePopupMenu();
+  action(file,L"选择扫描路径...\tCtrl+O",HotKind::Open);
+  AppendMenuW(file,MF_STRING,900,L"新窗口\tCtrl+N");
+  AppendMenuW(file,MF_STRING,901,L"打开快照...");
+  AppendMenuW(file,MF_STRING,902,L"保存快照...");
+  action(file,L"导出当前视图 CSV...",HotKind::Export);
+  AppendMenuW(file,MF_SEPARATOR,0,nullptr);
+  action(file,L"重新扫描\tF5",HotKind::Rescan);
+  action(file,L"刷新选中区域",HotKind::FocusRescan);
+  action(file,L"停止扫描",HotKind::Stop);
+  action(file,L"关闭视图",HotKind::CloseView);
+  AppendMenuW(file,MF_STRING,903,L"退出");
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(file),L"文件(&F)");
+  HMENU edit = CreatePopupMenu(); action(edit,L"配置...",HotKind::Configure);
+  AppendMenuW(edit,MF_STRING,904,L"复制当前路径");
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(edit),L"编辑(&E)");
+  HMENU view = CreatePopupMenu();
+  action(view,L"后退\tAlt+Left",HotKind::Back); action(view,L"前进\tAlt+Right",HotKind::Forward);
+  action(view,L"向上\tAlt+Up",HotKind::Up); action(view,L"扫描根目录\tCtrl+Home",HotKind::Home);
+  AppendMenuW(view,MF_SEPARATOR,0,nullptr);
+  action(view,L"减少细节\tCtrl+-",HotKind::LessDetail); action(view,L"增加细节\tCtrl++",HotKind::MoreDetail);
+  action(view,L"按文件类型着色\tCtrl+G",HotKind::FileGroups);
+  action(view,L"显示可用空间\tCtrl+F",HotKind::ShowFree);
+  action(view,L"显示未知空间\tCtrl+U",HotKind::ShowUnknown);
+  AppendMenuW(view,MF_SEPARATOR,0,nullptr);
+  AppendMenuW(view,MF_STRING,909,L"水平平铺"); AppendMenuW(view,MF_STRING,910,L"垂直平铺");
+  AppendMenuW(view,MF_STRING,911,L"层叠窗口"); AppendMenuW(view,MF_STRING,912,L"全部最小化");
+  AppendMenuW(view,MF_STRING,905,L"最小化窗口"); AppendMenuW(view,MF_STRING,906,L"还原窗口");
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(view),L"窗口(&W)");
+  HMENU help = CreatePopupMenu(); AppendMenuW(help,MF_STRING,907,L"筛选与快捷键");
+  AppendMenuW(help,MF_STRING,908,L"关于 SpaceViewer");
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(help),L"帮助(&H)");
+  return bar;
+}
+
 void openPath(const std::string& path) {
   std::wstring wide = utf8ToWide(path);
   ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -344,7 +508,14 @@ std::vector<VolumeEntry> listVolumes() {
 void onKey(WinState& state, WPARAM key) {
   bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
   bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-  if (ctrl && key == 'C') state.input.copy = true;
+  if (ctrl && key == 'N') { SendMessageW(state.hwnd,WM_COMMAND,900,0); return; }
+  if (ctrl && key == VK_HOME) state.input.command = static_cast<int>(HotKind::Home);
+  else if (ctrl && (key == VK_OEM_PLUS || key == VK_ADD)) state.input.command = static_cast<int>(HotKind::MoreDetail);
+  else if (ctrl && (key == VK_OEM_MINUS || key == VK_SUBTRACT)) state.input.command = static_cast<int>(HotKind::LessDetail);
+  else if (ctrl && key == 'G') state.input.command = static_cast<int>(HotKind::FileGroups);
+  else if (ctrl && key == 'F') state.input.command = static_cast<int>(HotKind::ShowFree);
+  else if (ctrl && key == 'U') state.input.command = static_cast<int>(HotKind::ShowUnknown);
+  else if (ctrl && key == 'C') state.input.copy = true;
   else if (ctrl && key == 'V') state.input.paste = true;
   else if (ctrl && key == 'A') state.input.selectAll = true;
   else if (ctrl && key == 'O') state.input.openShortcut = true;
@@ -376,6 +547,72 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
       SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
       return DefWindowProcW(hwnd, message, wParam, lParam);
     }
+    case WM_APP + 2:
+      if (state) {
+        std::string path;
+        if (showScanChoice(hwnd,path)) state->app.scanPath(path);
+        InvalidateRect(hwnd,nullptr,FALSE);
+      }
+      return 0;
+    case WM_INITMENUPOPUP:
+      if (state) {
+        ViewOptions options = state->app.options();
+        for (auto item : {std::make_pair(HotKind::FileGroups, options.fileGroups),
+                          std::make_pair(HotKind::ShowFree, options.showFree),
+                          std::make_pair(HotKind::ShowUnknown, options.showUnknown)})
+          CheckMenuItem(reinterpret_cast<HMENU>(wParam),1000+static_cast<int>(item.first),
+                        MF_BYCOMMAND | (item.second ? MF_CHECKED : MF_UNCHECKED));
+      }
+      return 0;
+    case WM_COMMAND:
+      if (state) {
+        int command = LOWORD(wParam);
+        if (command >= 1000 && command <= 1000+static_cast<int>(HotKind::CloseView)) {
+          state->input.command = command - 1000;
+        } else if (command == 900) {
+          wchar_t exe[32768]; GetModuleFileNameW(nullptr,exe,32768);
+          ShellExecuteW(hwnd,L"open",exe,nullptr,nullptr,SW_SHOWNORMAL);
+        } else if (command == 901 || command == 902) {
+          std::wstring path = pickSnapshot(hwnd,command == 902);
+          if (!path.empty()) {
+            std::string error;
+            bool ok = command == 902 ? state->app.saveSnapshot(wideToUtf8(path),error)
+                                     : state->app.loadSnapshot(wideToUtf8(path),error);
+            if (!ok) MessageBoxW(hwnd,utf8ToWide(error).c_str(),L"SpaceViewer",MB_OK|MB_ICONINFORMATION);
+          }
+        } else if (command == 903) { SendMessageW(hwnd,WM_CLOSE,0,0); return 0; }
+        else if (command == 904) {
+          int length = GetWindowTextLengthW(hwnd);
+          std::wstring title(length+1,L'\0'); GetWindowTextW(hwnd,title.data(),length+1);
+          auto split = title.find(L" - ");
+          if (split != std::wstring::npos) setClipboard(hwnd,wideToUtf8(title.substr(split+3).c_str()));
+        } else if (command == 905) ShowWindow(hwnd,SW_MINIMIZE);
+        else if (command == 906) ShowWindow(hwnd,SW_RESTORE);
+        else if (command >= 909 && command <= 912) {
+          std::vector<HWND> windows;
+          EnumWindows([](HWND window, LPARAM data)->BOOL {
+            wchar_t name[64]; GetClassNameW(window,name,64);
+            if (wcscmp(name,L"SpaceViewer") == 0 && IsWindowVisible(window))
+              reinterpret_cast<std::vector<HWND>*>(data)->push_back(window);
+            return TRUE;
+          },reinterpret_cast<LPARAM>(&windows));
+          if (command == 912) for (HWND window : windows) ShowWindow(window,SW_MINIMIZE);
+          else if (command == 911) CascadeWindows(nullptr,0,nullptr,static_cast<UINT>(windows.size()),windows.data());
+          else TileWindows(nullptr,command == 909 ? MDITILE_HORIZONTAL : MDITILE_VERTICAL,
+                           nullptr,static_cast<UINT>(windows.size()),windows.data());
+        }
+        else if (command == 907) MessageBoxW(hwnd,
+          L"单击目录原地展开，双击进入；Backspace / Alt+Up 向上。\n"
+          L"Ctrl+O 选择扫描；Ctrl+N 新窗口；Ctrl+Home 根目录；F5 重扫。\n"
+          L"Ctrl+- / Ctrl++ 调节细节；Ctrl+G 文件类型；Ctrl+F 可用空间；Ctrl+U 未知空间。\n"
+          L"包含、排除支持 *.jpg;*.tmp 等通配符，最小大小支持 1M、1.5G。\n"
+          L"快照使用 SpaceViewer .svs 格式，打开后离线查看，不监听磁盘。",
+          L"筛选与快捷键",MB_OK|MB_ICONINFORMATION);
+        else if (command == 908) MessageBoxW(hwnd,L"SpaceViewer\n磁盘占用矩形树图查看器\nGPL-3.0",
+                                              L"关于 SpaceViewer",MB_OK|MB_ICONINFORMATION);
+        InvalidateRect(hwnd,nullptr,FALSE);
+      }
+      return 0;
     case WM_ERASEBKGND:
       return 1;
     case WM_DPICHANGED: {
@@ -477,6 +714,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
       return 0;
     }
     case WM_DESTROY:
+      if (state && !state->configPath.empty()) {
+        ViewOptions options = state->app.options();
+        auto save = [&](const wchar_t* key, int value) {
+          WritePrivateProfileStringW(L"View",key,std::to_wstring(value).c_str(),state->configPath.c_str());
+        };
+        save(L"Detail",options.detail); save(L"FileGroups",options.fileGroups);
+        save(L"ShowFree",options.showFree); save(L"ShowUnknown",options.showUnknown);
+      }
       PostQuitMessage(0);
       return 0;
     default:
@@ -505,11 +750,31 @@ std::string initialPath() {
 
 int spaceviewer_main(int, char**) {
   enableHighDpi();
+  INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_LISTVIEW_CLASSES|ICC_TAB_CLASSES};
+  InitCommonControlsEx(&controls);
   HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   WinState state;
+  wchar_t appData[MAX_PATH];
+  if (SUCCEEDED(SHGetFolderPathW(nullptr,CSIDL_APPDATA,nullptr,SHGFP_TYPE_CURRENT,appData))) {
+    std::wstring dir = std::wstring(appData) + L"\\SpaceViewer";
+    CreateDirectoryW(dir.c_str(),nullptr);
+    state.configPath = dir + L"\\settings.ini";
+    ViewOptions options;
+    options.detail = GetPrivateProfileIntW(L"View",L"Detail",2,state.configPath.c_str());
+    options.fileGroups = GetPrivateProfileIntW(L"View",L"FileGroups",0,state.configPath.c_str()) != 0;
+    options.showFree = GetPrivateProfileIntW(L"View",L"ShowFree",0,state.configPath.c_str()) != 0;
+    options.showUnknown = GetPrivateProfileIntW(L"View",L"ShowUnknown",0,state.configPath.c_str()) != 0;
+    state.app.setOptions(options);
+  }
   QueryPerformanceFrequency(&state.qpf);
   state.host.volumes = []() { return listVolumes(); };
-  state.host.pickFolder = [&state](std::string& path) { return showFolder(state.hwnd, path); };
+  state.host.pickFolder = [&state](std::string& path) { return showScanChoice(state.hwnd, path); };
+  state.host.newWindow = [&state]() { SendMessageW(state.hwnd,WM_COMMAND,900,0); };
+  state.host.configure = [&state]() {
+    ViewOptions options = state.app.options();
+    if (DialogBoxParamW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(201),state.hwnd,optionsProc,
+                        reinterpret_cast<LPARAM>(&options)) == 1) state.app.setOptions(options);
+  };
   state.host.pickSave = [&state](std::string& path) { return showSave(state.hwnd, path); };
   state.host.openPath = [](const std::string& path) { openPath(path); };
   state.host.revealPath = [](const std::string& path) { revealPath(path); };
@@ -529,7 +794,7 @@ int spaceviewer_main(int, char**) {
   RegisterClassW(&cls);
 
   HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, L"SpaceViewer", L"SpaceViewer", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                              CW_USEDEFAULT, CW_USEDEFAULT, 1100, 740, nullptr, nullptr, cls.hInstance, &state);
+                              CW_USEDEFAULT, CW_USEDEFAULT, 1100, 740, nullptr, mainMenu(), cls.hInstance, &state);
   state.hwnd = hwnd;
   SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(LoadImageW(
       cls.hInstance, MAKEINTRESOURCEW(101), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
@@ -537,7 +802,7 @@ int spaceviewer_main(int, char**) {
   state.app.setWake([hwnd]() { PostMessageW(hwnd, WM_APP + 1, 0, 0); });
   int dpi = windowDpi(hwnd);
   RECT wanted{0, 0, MulDiv(1100, dpi, 96), MulDiv(740, dpi, 96)};
-  AdjustWindowRectEx(&wanted, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_ACCEPTFILES);
+  AdjustWindowRectEx(&wanted, WS_OVERLAPPEDWINDOW, TRUE, WS_EX_ACCEPTFILES);
   SetWindowPos(hwnd, nullptr, 0, 0, wanted.right - wanted.left, wanted.bottom - wanted.top,
                SWP_NOMOVE | SWP_NOZORDER);
   ShowWindow(hwnd, SW_SHOW);
@@ -545,6 +810,7 @@ int spaceviewer_main(int, char**) {
   DragAcceptFiles(hwnd, TRUE);
   std::string path = initialPath();
   if (!path.empty()) state.app.scanPath(path);
+  else PostMessageW(hwnd,WM_APP+2,0,0);
 
   MSG message;
   while (GetMessageW(&message, nullptr, 0, 0)) {

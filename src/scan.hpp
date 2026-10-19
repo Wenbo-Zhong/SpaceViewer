@@ -16,6 +16,8 @@ class Scanner {
   void setWake(std::function<void()> wake);
   void start(const std::string& utf8Path);
   void requestStop();
+  void refreshSubtree(uint32_t index);
+  void loadSnapshot(TreeSnapshot tree);
   bool running() const;
   bool stopRequested() const;
   std::shared_ptr<const TreeSnapshot> snapshot() const;

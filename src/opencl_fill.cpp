@@ -268,7 +268,7 @@ cl_mem grow(cl_mem existing, size_t& capacity, size_t need, cl_uint flags) {
 }  // namespace
 
 bool openclFillTiles(Frame& frame, const std::vector<Tile>& tiles, int originX, int originY, int mapW, int mapH,
-                     int dividerPx) {
+                     int dividerPx, bool fileGroups) {
   if (mapW < 64 || mapH < 64 || tiles.size() < 24) return false;
   static std::once_flag once;
   std::call_once(once, []() { initApi(); });
@@ -288,11 +288,11 @@ bool openclFillTiles(Frame& frame, const std::vector<Tile>& tiles, int originX, 
     int y1 = static_cast<int>(std::floor(tile.outer.y + tile.outer.h));
     int w = x1 - x0;
     int h = y1 - y0;
-    if (w <= 0 || h <= 0) {
+    if (tile.hidden || w <= 0 || h <= 0) {
       packed.push_back(ClTile{});
       continue;
     }
-    uint32_t base = categoryColor(tile.flags & kDir ? CatDir : tile.category);
+    uint32_t base = categoryColor(tile.flags & kDir ? CatDir : fileGroups ? tile.category : CatOther);
     if (tile.flags & kFree) base = categoryColor(CatFree);
     if (tile.flags & kPending) base = 0xf5cba7;
     int titleH = static_cast<int>(std::floor(tile.title.y + tile.title.h) - std::floor(tile.title.y));
