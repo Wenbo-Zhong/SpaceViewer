@@ -1,14 +1,15 @@
 #include "app.hpp"
 #include "host.hpp"
+#include "menu.hpp"
 
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #include <X11/Xft/Xft.h>
 
 #include <cerrno>
 #include <clocale>
-#include <csignal>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -65,6 +66,7 @@ struct X11App {
   bool running = true;
   App app;
   Input input;
+  LinuxMenuState menu;
   std::vector<XftFont*> fonts;
   std::vector<int> fontPx;
   XIM xim = nullptr;
@@ -199,7 +201,6 @@ std::string getClipboard(X11App& app) {
 }  // namespace
 
 int spaceviewer_x11_main(int argc, char** argv) {
-  std::signal(SIGCHLD, SIG_IGN);
   XSetLocaleModifiers("");
   std::setlocale(LC_ALL, "");
   Display* display = XOpenDisplay(nullptr);
@@ -256,7 +257,16 @@ int spaceviewer_x11_main(int argc, char** argv) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     app.input.timeSec = static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1e9;
     Frame frame;
-    app.app.update(app.input, host, frame);
+    Input uiInput = app.input;
+    const int windowHeight = uiInput.windowH;
+    linuxMenuPrepare(app.menu, uiInput, false);
+    if (app.menu.closeRequested) app.running = false;
+    if (app.menu.rootScanRequested) {
+      app.menu.rootScanRequested = false;
+      if (!linuxLaunchRootScan()) std::fprintf(stderr, "SpaceViewer: cannot start pkexec root scan\n");
+    }
+    app.app.update(uiInput, host, frame);
+    linuxMenuPresent(app.menu, frame, windowHeight, uiInput.dpi, false);
     present(app, frame);
     clearEdges(app.input);
   };

@@ -149,6 +149,10 @@ struct Scanner::Impl {
   std::atomic<bool> runningFlag{false};
   std::chrono::steady_clock::time_point started{};
   std::chrono::steady_clock::time_point lastPub{};
+#if defined(__linux__)
+  bool stayOnRootDevice = false;
+  dev_t rootDevice = 0;
+#endif
 
   ~Impl() { join(); }
 
@@ -305,6 +309,10 @@ struct Scanner::Impl {
       publish(true);
       return;
     }
+#if defined(__linux__)
+    stayOnRootDevice = root == "/";
+    rootDevice = st.st_dev;
+#endif
     if (isVolumeRoot(root)) {
       struct statvfs vfs;
       if (statvfs(root.c_str(), &vfs) == 0) {
@@ -469,6 +477,7 @@ struct Scanner::Impl {
       uint64_t size = 0;
       uint8_t category = CatOther;
       bool dir = false;
+      bool traverse = true;
       std::string full;
     };
     std::vector<Pending> batch;
@@ -485,7 +494,7 @@ struct Scanner::Impl {
         if (item.dir) {
           uint32_t child = addNode(live, id, item.name, kDir, CatDir, 0);
           live.dirs++;
-          later.push_back(Later{child, item.full});
+          if (item.traverse) later.push_back(Later{child, item.full});
         } else {
           addNode(live, id, item.name, 0, item.category, item.size);
           live.files++;
@@ -517,7 +526,13 @@ struct Scanner::Impl {
       if (S_ISDIR(st.st_mode)) {
         item.dir = true;
         item.full = full;
+#if defined(__linux__)
+        item.traverse = !stayOnRootDevice || st.st_dev == rootDevice;
+#endif
       } else if (S_ISREG(st.st_mode)) {
+#if defined(__linux__)
+        if (stayOnRootDevice && st.st_dev != rootDevice) continue;
+#endif
         item.size = static_cast<uint64_t>(st.st_size);
         item.category = categoryFromName(item.name);
       } else {
@@ -834,6 +849,12 @@ void Scanner::Impl::watch() {
       live.watchGap = true;
       return;
     }
+#if defined(__linux__)
+    if (stayOnRootDevice) {
+      struct stat st;
+      if (stat(path.c_str(), &st) != 0 || st.st_dev != rootDevice) return;
+    }
+#endif
     int wd = inotify_add_watch(fd, path.c_str(),
                                IN_CREATE | IN_DELETE | IN_MODIFY | IN_MOVED_FROM | IN_MOVED_TO | IN_ONLYDIR);
     if (wd >= 0) watchOf[wd] = id;
@@ -920,6 +941,17 @@ void Scanner::Impl::watch() {
       struct stat st;
       if (lstat(full.c_str(), &st) != 0 || S_ISLNK(st.st_mode)) continue;
       bool isDir = S_ISDIR(st.st_mode);
+#if defined(__linux__)
+      if (stayOnRootDevice && st.st_dev != rootDevice) {
+        if (isDir) {
+          std::lock_guard<std::mutex> lock(treeMu);
+          uint32_t id = addNode(live, parent, name, kDir, CatDir, 0);
+          live.dirs++;
+          live.changed.push_back(id);
+        }
+        continue;
+      }
+#endif
       uint32_t existing = kNone;
       {
         std::lock_guard<std::mutex> lock(treeMu);

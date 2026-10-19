@@ -3,6 +3,7 @@
 #include "text.hpp"
 
 #include <cstdio>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -11,6 +12,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
@@ -93,9 +95,53 @@ bool linuxPickPath(std::string& path, bool save) {
 void linuxLaunch(const std::string& program, const std::string& arg) {
   pid_t pid = fork();
   if (pid == 0) {
+    pid_t child = fork();
+    if (child < 0) _exit(127);
+    if (child > 0) _exit(0);
+    setsid();
     execlp(program.c_str(), program.c_str(), arg.c_str(), static_cast<char*>(nullptr));
     _exit(127);
   }
+  if (pid > 0) {
+    while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+  }
+}
+
+bool linuxLaunchRootScan() {
+  const char* pkexec = std::getenv("SPACEVIEWER_PKEXEC");
+  if (!pkexec || !*pkexec) pkexec = "pkexec";
+  const char* appImage = std::getenv("APPIMAGE");
+  char executable[4096];
+  ssize_t length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+  if (length <= 0) return false;
+  executable[length] = '\0';
+
+  std::vector<std::string> args{pkexec, "env", "APPIMAGE_EXTRACT_AND_RUN=1"};
+  const char* envNames[] = {"DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR",
+                            "DBUS_SESSION_BUS_ADDRESS", "SPACEVIEWER_BACKEND"};
+  for (const char* name : envNames) {
+    if (const char* value = std::getenv(name)) args.emplace_back(std::string(name) + "=" + value);
+  }
+  if (appImage && *appImage) args.emplace_back(std::string("APPIMAGE=") + appImage);
+  args.emplace_back(appImage && *appImage ? appImage : executable);
+  args.emplace_back("/");
+
+  pid_t pid = fork();
+  if (pid < 0) return false;
+  if (pid == 0) {
+    pid_t child = fork();
+    if (child < 0) _exit(127);
+    if (child > 0) _exit(0);
+    setsid();
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (std::string& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+  while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+  return true;
 }
 
 void linuxFillHost(Host& host) {

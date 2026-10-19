@@ -7,7 +7,9 @@ int spaceviewer_x11_main(int argc, char** argv);
 int spaceviewer_wayland_main(int argc, char** argv);
 
 int spaceviewer_main(int argc, char** argv) {
-  std::signal(SIGCHLD, SIG_IGN);
+  // AppImage runtimes may exec the app with SIGCHLD ignored; popen/pclose
+  // needs the default disposition to collect the file picker exit status.
+  std::signal(SIGCHLD, SIG_DFL);
   const char* backend = std::getenv("SPACEVIEWER_BACKEND");
   bool wantWayland = false;
   if (backend && std::strcmp(backend, "x11") == 0) wantWayland = false;

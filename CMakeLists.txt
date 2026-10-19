@@ -72,6 +72,7 @@ else()
   target_sources(spaceviewer PRIVATE
     src/platform/linux/main.cpp
     src/platform/linux/host.cpp
+    src/platform/linux/menu.cpp
     src/platform/linux/x11.cpp
     src/platform/linux/wayland.cpp)
   find_package(PkgConfig REQUIRED)

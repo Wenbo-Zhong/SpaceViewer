@@ -1,0 +1,22 @@
+#pragma once
+
+#include "types.hpp"
+
+struct LinuxMenuState {
+  int active = -1;
+  bool closeRequested = false;
+  bool minimizeRequested = false;
+  bool maximizeRequested = false;
+  bool maximized = false;
+  bool rootScanRequested = false;
+  int hoveredControl = -1;
+};
+
+enum class LinuxWindowControl { None, Minimize, Maximize, Close };
+
+// Reserve an in-window menu strip and route its clicks into existing app actions.
+void linuxMenuPrepare(LinuxMenuState& menu, Input& input, bool clientTitlebar = true);
+void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, float dpi, bool clientTitlebar = true);
+int linuxTitlebarHeight(float dpi);
+bool linuxTitlebarDragHit(int x, int y, int width, float dpi);
+LinuxWindowControl linuxTitlebarControlAt(int x, int y, int width, float dpi);

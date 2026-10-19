@@ -4,6 +4,7 @@
 
 #include "app.hpp"
 #include "host.hpp"
+#include "menu.hpp"
 
 #include "xdg-decoration-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -104,6 +105,7 @@ struct Wayland {
   bool clipMine = false;
   App app;
   Input input;
+  LinuxMenuState menu;
 };
 
 int outputScale(Wayland& app) {
@@ -157,7 +159,7 @@ void dataSourceAction(void*, wl_data_source*, uint32_t) {}
 
 void wmPing(void*, xdg_wm_base* wm, uint32_t serial) { xdg_wm_base_pong(wm, serial); }
 void xdgConfigure(void* data, xdg_surface* surface, uint32_t serial);
-void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array*);
+void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array* states);
 void toplevelClose(void* data, xdg_toplevel*);
 
 void registryGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface, uint32_t version);
@@ -245,7 +247,15 @@ void pointerButton(void* data, wl_pointer*, uint32_t serial, uint32_t, uint32_t 
   auto* app = static_cast<Wayland*>(data);
   app->serial = serial;
   if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
-  if (button == 0x110) app->input.leftPressed = true;
+  if (button == 0x110) {
+    if (app->input.mouseY < linuxTitlebarHeight(app->input.dpi) &&
+        linuxTitlebarDragHit(app->input.mouseX, app->input.mouseY, app->input.windowW, app->input.dpi)) {
+      if (app->toplevel && app->seat) xdg_toplevel_move(app->toplevel, app->seat, serial);
+      app->dirty = true;
+      return;
+    }
+    app->input.leftPressed = true;
+  }
   else if (button == 0x111) app->input.rightPressed = true;
   app->dirty = true;
 }
@@ -356,10 +366,19 @@ void xdgConfigure(void* data, xdg_surface* surface, uint32_t serial) {
   app->dirty = true;
 }
 
-void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array*) {
+void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array* states) {
   auto* app = static_cast<Wayland*>(data);
   if (width > 0) app->logicalW = width;
   if (height > 0) app->logicalH = height;
+  app->menu.maximized = false;
+  if (states) {
+    auto* state = static_cast<const uint32_t*>(states->data);
+    const auto* end = reinterpret_cast<const uint32_t*>(
+        static_cast<const char*>(states->data) + states->size);
+    for (; state < end; ++state) {
+      if (*state == XDG_TOPLEVEL_STATE_MAXIMIZED) app->menu.maximized = true;
+    }
+  }
   app->dirty = true;
 }
 
@@ -583,7 +602,7 @@ int spaceviewer_wayland_main(int argc, char** argv) {
     static const zxdg_toplevel_decoration_v1_listener decorationListener = {
         [](void*, zxdg_toplevel_decoration_v1*, uint32_t) {}};
     zxdg_toplevel_decoration_v1_add_listener(app.decoration, &decorationListener, nullptr);
-    zxdg_toplevel_decoration_v1_set_mode(app.decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    zxdg_toplevel_decoration_v1_set_mode(app.decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
   }
   wl_surface_commit(app.surface);
   wl_display_roundtrip(app.display);
@@ -613,7 +632,25 @@ int spaceviewer_wayland_main(int argc, char** argv) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     app.input.timeSec = static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1e9;
     Frame frame;
-    app.app.update(app.input, host, frame);
+    Input uiInput = app.input;
+    const int windowHeight = uiInput.windowH;
+    linuxMenuPrepare(app.menu, uiInput);
+    if (app.menu.closeRequested) app.running = false;
+    if (app.menu.minimizeRequested) {
+      app.menu.minimizeRequested = false;
+      xdg_toplevel_set_minimized(app.toplevel);
+    }
+    if (app.menu.maximizeRequested) {
+      app.menu.maximizeRequested = false;
+      if (app.menu.maximized) xdg_toplevel_unset_maximized(app.toplevel);
+      else xdg_toplevel_set_maximized(app.toplevel);
+    }
+    if (app.menu.rootScanRequested) {
+      app.menu.rootScanRequested = false;
+      if (!linuxLaunchRootScan()) std::fprintf(stderr, "SpaceViewer: cannot start pkexec root scan\n");
+    }
+    app.app.update(uiInput, host, frame);
+    linuxMenuPresent(app.menu, frame, windowHeight, uiInput.dpi);
     present(app, frame);
     clearEdges(app.input);
     app.dirty = false;

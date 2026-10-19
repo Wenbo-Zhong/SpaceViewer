@@ -73,6 +73,14 @@ cmake --build build
 
 没有 CMake 时可以 `sh build-linux.sh`。选择文件夹需要 `zenity` 或 `kdialog`；没有这两个程序时，在路径栏输入路径后回车。X11 高分屏请让 `Xft.dpi` 等于实际 DPI。Wayland 使用输出的整数缩放，界面按物理像素绘制。
 
+生成用于分发的单个可执行文件（安装上述编译依赖后）：
+
+```sh
+sh package-linux.sh
+```
+
+输出为 `out/SpaceViewer-ubuntu-x86_64`（ARM64 上为 `aarch64`），已去除调试符号、设置可执行权限并运行自检。在文件管理器中双击即可启动；复制或下载后如果可执行权限丢失，在文件属性的权限页启用“允许作为程序执行”。这是原生 Linux 可执行文件，仍使用系统的 X11、Wayland、Fontconfig、FreeType 和 C++ 运行库，不是静态链接包或 AppImage。应在计划支持的最旧 Ubuntu 版本上构建；在 Ubuntu 26.04 上生成的文件只验证了 Ubuntu 26.04，不保证兼容较旧发行版。
+
 ## macOS
 
 需要 Xcode 命令行工具，系统至少 macOS 10.15。
