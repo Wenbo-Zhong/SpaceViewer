@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleExecutable</key>
+	<string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+	<key>CFBundleIdentifier</key>
+	<string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+	<key>CFBundleVersion</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>SpaceViewer 需要读取所选文件夹及其内容，以统计磁盘空间使用情况。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>SpaceViewer 需要读取所选文件夹及其内容，以统计磁盘空间使用情况。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>SpaceViewer 需要读取所选文件夹及其内容，以统计磁盘空间使用情况。</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>SpaceViewer 需要读取所选磁盘及其内容，以统计磁盘空间使用情况。</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>SpaceViewer 需要读取所选网络磁盘及其内容，以统计磁盘空间使用情况。</string>
+</dict>
+</plist>

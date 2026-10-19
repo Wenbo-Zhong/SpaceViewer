@@ -2,11 +2,19 @@
 
 #include "text.hpp"
 #include "util.hpp"
+#if defined(__APPLE__)
+#include "platform/apple/scan_support.hpp"
+#endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <iterator>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -122,7 +130,17 @@ std::string normalizePosix(const std::string& input) {
 struct Scanner::Impl {
   std::mutex treeMu;
   std::mutex pubMu;
+  std::mutex publishMu;
   std::mutex wakeMu;
+  std::mutex taskMu;
+  std::condition_variable taskCv;
+  struct ScanTask {
+    uint32_t node;
+    std::string path;
+    bool chargePending;
+  };
+  std::deque<ScanTask> taskQueue;
+  size_t outstandingTasks = 0;
   TreeSnapshot live;
   std::shared_ptr<const TreeSnapshot> published = std::make_shared<TreeSnapshot>();
   std::function<void()> wake;
@@ -150,6 +168,7 @@ struct Scanner::Impl {
   }
 
   void publish(bool force) {
+    std::lock_guard<std::mutex> publishLock(publishMu);
     auto now = std::chrono::steady_clock::now();
     if (!force && lastPub.time_since_epoch().count() != 0 && now - lastPub < std::chrono::milliseconds(250)) {
       return;
@@ -166,6 +185,68 @@ struct Scanner::Impl {
     }
     lastPub = now;
     fire();
+  }
+
+  template <typename ScanOne>
+  void runTaskPool(const ScanTask& root, ScanOne scanOne) {
+    {
+      std::lock_guard<std::mutex> lock(taskMu);
+      taskQueue.clear();
+      taskQueue.push_back(root);
+      outstandingTasks = 1;
+    }
+    const unsigned int hardwareThreads = std::thread::hardware_concurrency();
+    const size_t threadCount = std::max<size_t>(2, std::min<size_t>(8, hardwareThreads ? hardwareThreads : 4));
+    auto worker = [&]() {
+#if defined(_WIN32)
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+      for (;;) {
+        ScanTask task{};
+        {
+          std::unique_lock<std::mutex> lock(taskMu);
+          taskCv.wait(lock, [&]() { return cancel.load() || !taskQueue.empty() || outstandingTasks == 0; });
+          if (cancel.load() || (taskQueue.empty() && outstandingTasks == 0)) return;
+          if (taskQueue.empty()) continue;
+          task = std::move(taskQueue.front());
+          taskQueue.pop_front();
+        }
+        std::vector<ScanTask> children = scanOne(task);
+        {
+          std::lock_guard<std::mutex> lock(taskMu);
+          if (!cancel.load()) {
+            for (ScanTask& child : children) taskQueue.push_back(std::move(child));
+            outstandingTasks += children.size();
+          }
+          if (outstandingTasks > 0) --outstandingTasks;
+          if (cancel.load()) {
+            taskQueue.clear();
+            outstandingTasks = 0;
+          }
+        }
+        taskCv.notify_all();
+      }
+    };
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount - 1);
+    for (size_t i = 1; i < threadCount; ++i) workers.emplace_back(worker);
+    worker();
+    for (std::thread& thread : workers) thread.join();
+    {
+      std::lock_guard<std::mutex> lock(taskMu);
+      taskQueue.clear();
+      outstandingTasks = 0;
+    }
+  }
+
+  void scanParallel(uint32_t id, const std::string& path, bool chargePending) {
+    runTaskPool(ScanTask{id, path, chargePending}, [this](const ScanTask& task) {
+#if defined(_WIN32)
+      return scanWindowsOne(task.node, utf8ToWide(task.path), task.chargePending);
+#else
+      return scanPosixOne(task.node, task.path, task.chargePending);
+#endif
+    });
   }
 
   void threadMain() {
@@ -205,7 +286,7 @@ struct Scanner::Impl {
       }
     }
     publish(true);
-    scanWindows(0, root, true);
+    scanParallel(0, wideToUtf8(root), true);
 #else
     std::string root;
     {
@@ -227,9 +308,18 @@ struct Scanner::Impl {
     if (isVolumeRoot(root)) {
       struct statvfs vfs;
       if (statvfs(root.c_str(), &vfs) == 0) {
-        std::lock_guard<std::mutex> lock(treeMu);
         uint64_t capacity = static_cast<uint64_t>(vfs.f_blocks) * static_cast<uint64_t>(vfs.f_frsize);
-        uint64_t freeBytes = static_cast<uint64_t>(vfs.f_bavail) * static_cast<uint64_t>(vfs.f_frsize);
+        uint64_t freeBlocks = static_cast<uint64_t>(vfs.f_bavail);
+        uint64_t freeBytes = freeBlocks * static_cast<uint64_t>(vfs.f_frsize);
+#if defined(__APPLE__)
+        uint64_t reportedCapacity = 0;
+        uint64_t reportedAvailable = 0;
+        if (spaceviewer::apple::volumeCapacity(root, reportedCapacity, reportedAvailable)) {
+          capacity = reportedCapacity;
+          freeBytes = reportedAvailable;
+        }
+#endif
+        std::lock_guard<std::mutex> lock(treeMu);
         if (freeBytes > capacity) freeBytes = capacity;
         uint64_t unknown = capacity > freeBytes ? capacity - freeBytes : 0;
         live.capacity = capacity;
@@ -239,7 +329,7 @@ struct Scanner::Impl {
       }
     }
     publish(true);
-    scanPosix(0, root, true);
+    scanParallel(0, root, true);
 #endif
     {
       std::lock_guard<std::mutex> lock(treeMu);
@@ -254,8 +344,8 @@ struct Scanner::Impl {
   }
 
 #if defined(_WIN32)
-  void scanWindows(uint32_t id, const std::wstring& path, bool chargePending) {
-    if (cancel) return;
+  std::vector<ScanTask> scanWindowsOne(uint32_t id, const std::wstring& path, bool chargePending) {
+    if (cancel) return {};
     {
       std::lock_guard<std::mutex> lock(treeMu);
       live.tip = wideToUtf8(path);
@@ -273,7 +363,7 @@ struct Scanner::Impl {
         std::lock_guard<std::mutex> lock(treeMu);
         live.errors++;
       }
-      return;
+      return {};
     }
     struct Pending {
       std::string name;
@@ -333,14 +423,34 @@ struct Scanner::Impl {
     FindClose(handle);
     flush();
     publish(false);
-    for (const Later& dir : later) {
-      if (cancel) break;
-      scanWindows(dir.node, dir.path, chargePending);
+    std::vector<ScanTask> children;
+    children.reserve(later.size());
+    for (const Later& dir : later) children.push_back(ScanTask{dir.node, wideToUtf8(dir.path), chargePending});
+    return children;
+  }
+
+  void scanWindows(uint32_t id, const std::wstring& path, bool chargePending) {
+    std::vector<ScanTask> stack{ScanTask{id, wideToUtf8(path), chargePending}};
+    while (!stack.empty() && !cancel.load()) {
+      ScanTask task = std::move(stack.back());
+      stack.pop_back();
+      std::vector<ScanTask> children = scanWindowsOne(task.node, utf8ToWide(task.path), task.chargePending);
+      stack.insert(stack.end(), std::make_move_iterator(children.begin()), std::make_move_iterator(children.end()));
     }
   }
 #else
-  void scanPosix(uint32_t id, const std::string& path, bool chargePending) {
-    if (cancel) return;
+  std::vector<ScanTask> scanPosixOne(uint32_t id, const std::string& path, bool chargePending) {
+    if (cancel) return {};
+#if defined(__APPLE__)
+    if (path == "/System/Volumes/Data") {
+      std::string scanRoot;
+      {
+        std::lock_guard<std::mutex> lock(treeMu);
+        scanRoot = live.rootPath;
+      }
+      if (spaceviewer::apple::shouldSkipDirectory(scanRoot, path)) return {};
+    }
+#endif
     {
       std::lock_guard<std::mutex> lock(treeMu);
       live.tip = path;
@@ -348,9 +458,11 @@ struct Scanner::Impl {
     publish(false);
     DIR* directory = opendir(path.c_str());
     if (!directory) {
+      const int openError = errno;
       std::lock_guard<std::mutex> lock(treeMu);
       live.errors++;
-      return;
+      if (openError == EACCES || openError == EPERM) live.permissionErrors++;
+      return {};
     }
     struct Pending {
       std::string name;
@@ -393,8 +505,10 @@ struct Scanner::Impl {
       std::string full = joinPath(path, name, '/');
       struct stat st;
       if (lstat(full.c_str(), &st) != 0) {
+        const int statError = errno;
         std::lock_guard<std::mutex> lock(treeMu);
         live.errors++;
+        if (statError == EACCES || statError == EPERM) live.permissionErrors++;
         continue;
       }
       if (S_ISLNK(st.st_mode)) continue;
@@ -418,9 +532,19 @@ struct Scanner::Impl {
     closedir(directory);
     flush();
     publish(false);
-    for (const Later& dir : later) {
-      if (cancel) break;
-      scanPosix(dir.node, dir.path, chargePending);
+    std::vector<ScanTask> children;
+    children.reserve(later.size());
+    for (const Later& dir : later) children.push_back(ScanTask{dir.node, dir.path, chargePending});
+    return children;
+  }
+
+  void scanPosix(uint32_t id, const std::string& path, bool chargePending) {
+    std::vector<ScanTask> stack{ScanTask{id, path, chargePending}};
+    while (!stack.empty() && !cancel.load()) {
+      ScanTask task = std::move(stack.back());
+      stack.pop_back();
+      std::vector<ScanTask> children = scanPosixOne(task.node, task.path, task.chargePending);
+      stack.insert(stack.end(), std::make_move_iterator(children.begin()), std::make_move_iterator(children.end()));
     }
   }
 #endif
@@ -1026,6 +1150,7 @@ void Scanner::start(const std::string& utf8Path) {
     impl->live.rootPath = path;
     impl->live.sep = sep;
     impl->live.running = true;
+    impl->live.volumeScan = isVolumeRoot(path);
     std::string rootName = path;
     auto slash = rootName.find_last_of("\\/");
     if (slash != std::string::npos && slash + 1 < rootName.size()) rootName = rootName.substr(slash + 1);
@@ -1055,15 +1180,16 @@ void Scanner::refreshSubtree(uint32_t index) {
     Node& node = impl->live.nodes[index];
     node.firstChild = node.lastChild = kNone; node.childCount = 0;
     impl->live.running = true; impl->live.complete = false; impl->live.aborted = false;
+    impl->live.volumeScan = false;
   }
   impl->cancel = false; impl->runningFlag = true;
   impl->started = std::chrono::steady_clock::now(); impl->lastPub = {};
   impl->publish(true);
   impl->worker = std::thread([this,index,path]() {
 #if defined(_WIN32)
-    impl->scanWindows(index,utf8ToWide(path),false);
+    impl->scanParallel(index, path, false);
 #else
-    impl->scanPosix(index,path,false);
+    impl->scanParallel(index, path, false);
 #endif
     {
       std::lock_guard<std::mutex> lock(impl->treeMu);
@@ -1087,7 +1213,10 @@ void Scanner::loadSnapshot(TreeSnapshot tree) {
   impl->publish(true);
 }
 
-void Scanner::requestStop() { impl->cancel = true; }
+void Scanner::requestStop() {
+  impl->cancel = true;
+  impl->taskCv.notify_all();
+}
 
 bool Scanner::running() const { return impl->runningFlag.load(); }
 

@@ -50,9 +50,23 @@ if(WIN32)
   endif()
   target_link_libraries(spaceviewer PRIVATE comctl32 user32 gdi32 shell32 ole32 uuid comdlg32)
 elseif(APPLE)
-  target_sources(spaceviewer PRIVATE src/platform/apple/window.mm)
-  set_source_files_properties(src/platform/apple/window.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-  set_target_properties(spaceviewer PROPERTIES OUTPUT_NAME SpaceViewer MACOSX_BUNDLE FALSE)
+  target_sources(spaceviewer PRIVATE
+    src/platform/apple/window.mm
+    src/platform/apple/disk_space.mm
+    src/platform/apple/scan_policy.cpp
+    src/platform/apple/PrivacyInfo.xcprivacy)
+  set_source_files_properties(src/platform/apple/window.mm src/platform/apple/disk_space.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  set_source_files_properties(src/platform/apple/PrivacyInfo.xcprivacy
+    PROPERTIES HEADER_FILE_ONLY TRUE MACOSX_PACKAGE_LOCATION Resources)
+  set_target_properties(spaceviewer PROPERTIES
+    OUTPUT_NAME SpaceViewer
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_BUNDLE_NAME SpaceViewer
+    MACOSX_BUNDLE_GUI_IDENTIFIER com.spaceviewer.app
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/apple/Info.plist.in")
   target_link_libraries(spaceviewer PRIVATE "-framework Cocoa" "-framework CoreText" "-framework CoreGraphics" "-framework CoreServices")
 else()
   target_sources(spaceviewer PRIVATE

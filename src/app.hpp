@@ -12,6 +12,7 @@ class App {
 
   void setWake(std::function<void()> wake);
   void scanPath(const std::string& path);
+  void requestStop();
   void update(const Input& input, const Host& host, Frame& frame);
   bool animating() const;
   ViewOptions options() const;

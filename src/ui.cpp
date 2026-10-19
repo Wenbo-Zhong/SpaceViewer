@@ -278,6 +278,7 @@ struct App::State {
   bool frameAnim = false;
   ViewOptions options;
   bool archived = false;
+  bool permissionWarningShown = false;
   uint64_t seenChange = 0;
   std::unordered_map<uint32_t, double> changes;
   uint64_t hovered = kNone;
@@ -336,6 +337,7 @@ struct App::State {
     path.text = pathText;
     path.cursor = path.text.size();
     archived = false;
+    permissionWarningShown = false;
     if (globMatch(pathText, "*.svs")) {
       TreeSnapshot loaded;
       std::string error;
@@ -399,6 +401,7 @@ void App::setWake(std::function<void()> wake) {
 }
 
 void App::scanPath(const std::string& path) { state->scan(path); }
+void App::requestStop() { state->scanner.requestStop(); }
 
 ViewOptions App::options() const { return state->options; }
 void App::setOptions(const ViewOptions& options) {
@@ -698,6 +701,11 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
 
   s.refreshFilter();
   s.shown = s.scanner.snapshot();
+  if (s.shown && s.shown->complete && s.shown->permissionErrors > 0 && !s.archived &&
+      !s.permissionWarningShown && host.permissionWarning) {
+    s.permissionWarningShown = true;
+    host.permissionWarning(s.shown->permissionErrors);
+  }
   const TreeSnapshot* key = s.shown.get();
   if (key != s.visibleKey || s.inc.text != s.visibleInc || s.exc.text != s.visibleExc ||
       s.filter.minSize != s.visibleMin) {
@@ -727,6 +735,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   const bool pathBelow = true;
   const int pathRow = pathBelow ? scaled(input.dpi, 32) + gap : 0;
   const int top = gap + row1 + gap + pathRow + row2 + gap;
+  const int progressH = scaled(input.dpi, 4);
   const int font = std::max(11, scaled(input.dpi, 13));
   const int titlePx = std::max(12.0, static_cast<double>(scaled(input.dpi, 14)));
   fillRect(frame, 0, 0, width, top, 0xf8fafc);
@@ -826,10 +835,52 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   field(x, y, filterLabelW, minBoxW, zh::minSize(), s.min, Focus::Min, zh::hintMin(),
         s.minInvalid, HotKind::EditMin);
 
+  const int progressX = gap;
+  const int progressW = std::max(1, width - gap * 2);
+  const int progressY = top;
+  fillRect(frame, progressX, progressY, progressW, progressH, 0xe3e8ee);
+#if defined(_WIN32)
+  bool determinateProgress = false;
+  double progress = 0;
+  if (s.shown && s.shown->volumeScan && s.shown->capacity > s.shown->freeBytes) {
+    const uint64_t totalUsed = s.shown->capacity - s.shown->freeBytes;
+    uint64_t remaining = 0;
+    if (s.shown->pending != kNone && s.shown->pending < s.shown->nodes.size()) {
+      remaining = s.shown->nodes[s.shown->pending].size;
+    }
+    const uint64_t counted = totalUsed > remaining ? totalUsed - remaining : 0;
+    progress = std::min(1.0, static_cast<double>(counted) / static_cast<double>(totalUsed));
+    determinateProgress = true;
+  }
+  if (s.shown && s.shown->complete && !s.shown->aborted) {
+    progress = 1;
+    determinateProgress = true;
+  }
+#endif
+  if (running) {
+#if defined(_WIN32)
+    if (determinateProgress) {
+      const int filled = static_cast<int>(std::lround(progressW * std::min(progress, 0.99)));
+      fillRect(frame, progressX, progressY, filled, progressH, 0x4388c7);
+    } else {
+#endif
+    const int segmentW = std::max(progressW / 5, scaled(input.dpi, 72));
+    const int travel = progressW + segmentW;
+    const int offset = static_cast<int>(std::fmod(s.shown ? s.shown->elapsed * progressW * 0.9 : 0, travel)) - segmentW;
+    const int left = std::max(0, offset);
+    const int right = std::min(progressW, offset + segmentW);
+    fillRect(frame, progressX + left, progressY, right - left, progressH, 0x4388c7);
+#if defined(_WIN32)
+    }
+#endif
+  } else if (s.shown && s.shown->complete && !s.shown->aborted) {
+    fillRect(frame, progressX, progressY, progressW, progressH, 0x4388c7);
+  }
+
   int mapX = gap;
-  int mapY = top;
+  int mapY = top + progressH;
   int mapW = std::max(1, width - gap * 2);
-  int mapH = std::max(1, height - statusH - top - gap);
+  int mapH = std::max(1, height - statusH - mapY - gap);
   fillRect(frame, mapX, mapY, mapW, mapH, categoryColor(CatDir));
   if (hasTree) {
     // The view root is not a child tile. Reserve its title independently so
@@ -1062,6 +1113,13 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     status += "   ";
     if (running) {
       status += zh::scanning();
+#if defined(_WIN32)
+      if (determinateProgress) {
+        status += " ";
+        status += std::to_string(static_cast<int>(std::lround(progress * 100)));
+        status += "%";
+      }
+#endif
       if (s.shown->elapsed > 0.3 && s.shown->files > 0) {
         double rate = static_cast<double>(s.shown->files) / s.shown->elapsed;
         status += " ";

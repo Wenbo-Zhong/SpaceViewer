@@ -52,10 +52,12 @@ struct TreeSnapshot {
   uint64_t files = 0;
   uint64_t dirs = 0;
   uint64_t errors = 0;
+  uint64_t permissionErrors = 0;
   double elapsed = 0;
   bool running = false;
   bool complete = false;
   bool aborted = false;
+  bool volumeScan = false;
   bool watchGap = false;
   uint64_t changeGen = 0;
   std::vector<uint32_t> changed;
@@ -179,6 +181,7 @@ struct Host {
   std::function<void(const std::string& title)> setTitle;
   std::function<void()> configure;
   std::function<void()> newWindow;
+  std::function<void(uint64_t count)> permissionWarning;
 };
 
 struct Frame {

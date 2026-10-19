@@ -86,6 +86,8 @@ void clearEdges(Input& input) {
 
 @interface SVView : NSView <NSTextInputClient, NSDraggingDestination>
 - (void)scanPath:(NSString*)path;
+- (void)chooseStartupLocation;
+- (void)stopScanning;
 @end
 
 static SVView* gView = nil;
@@ -95,6 +97,7 @@ static SVView* gView = nil;
   Input input_;
   Host host_;
   bool scannedArg_;
+  NSTrackingArea* trackingArea_;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -113,9 +116,28 @@ static SVView* gView = nil;
   });
   host_.volumes = []() { return listVolumes(); };
   host_.pickFolder = [](std::string& path) {
+    NSAlert* scope = [NSAlert new];
+    scope.messageText = @"选择扫描范围";
+    scope.informativeText = @"可以扫描整个启动磁盘，也可以选择某个磁盘或文件夹。扫描整个磁盘可能需要在系统设置中启用“完全磁盘访问”。";
+    [scope addButtonWithTitle:@"扫描整个启动磁盘"];
+    [scope addButtonWithTitle:@"选择磁盘或文件夹"];
+    [scope addButtonWithTitle:@"取消"];
+    NSModalResponse scopeChoice = [scope runModal];
+    if (scopeChoice == NSAlertFirstButtonReturn) {
+      path = "/";
+      return true;
+    }
+    if (scopeChoice != NSAlertSecondButtonReturn) return false;
+
     NSOpenPanel* panel = [NSOpenPanel openPanel];
     panel.canChooseDirectories = YES;
     panel.canChooseFiles = NO;
+    panel.allowsMultipleSelection = NO;
+    panel.canCreateDirectories = NO;
+    panel.resolvesAliases = YES;
+    panel.directoryURL = [NSURL fileURLWithPath:@"/" isDirectory:YES];
+    panel.title = @"选择扫描位置";
+    panel.message = @"选择一个磁盘或文件夹。若扫描受保护的位置，macOS 会提示你授权访问。";
     panel.prompt = [NSString stringWithUTF8String:zh::pickTitle()];
     if ([panel runModal] != NSModalResponseOK || !panel.URL.path) return false;
     path = panel.URL.path.UTF8String;
@@ -145,6 +167,21 @@ static SVView* gView = nil;
     return text ? std::string(text.UTF8String) : std::string();
   };
   host_.setTitle = [](const std::string&) {};
+  host_.permissionWarning = [](uint64_t count) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSAlert* alert = [NSAlert new];
+      alert.messageText = @"部分位置没有访问权限";
+      alert.informativeText = [NSString stringWithFormat:
+          @"macOS 拒绝读取 %llu 个位置。若要完整扫描启动磁盘，请在“系统设置 > 隐私与安全性 > 完全磁盘访问”中启用 SpaceViewer，然后重新扫描。",
+          static_cast<unsigned long long>(count)];
+      [alert addButtonWithTitle:@"打开完全磁盘访问设置"];
+      [alert addButtonWithTitle:@"知道了"];
+      if ([alert runModal] == NSAlertFirstButtonReturn) {
+        NSURL* settings = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"];
+        [[NSWorkspace sharedWorkspace] openURL:settings];
+      }
+    });
+  };
   return self;
 }
 
@@ -156,11 +193,24 @@ static SVView* gView = nil;
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
   if (!self.window) return;
+  self.window.acceptsMouseMovedEvents = YES;
   NSWindow* __weak weakWindow = self.window;
   host_.setTitle = [weakWindow](const std::string& title) {
     NSWindow* live = weakWindow;
     if (live) live.title = [NSString stringWithUTF8String:title.c_str()];
   };
+}
+
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  if (trackingArea_) [self removeTrackingArea:trackingArea_];
+  trackingArea_ = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+                                                options:(NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                                                         NSTrackingActiveInKeyWindow |
+                                                         NSTrackingInVisibleRect)
+                                                  owner:self
+                                               userInfo:nil];
+  [self addTrackingArea:trackingArea_];
 }
 
 - (BOOL)acceptsFirstResponder {
@@ -171,6 +221,18 @@ static SVView* gView = nil;
   if (path.length == 0) return;
   app_->scanPath(path.UTF8String);
   [self setNeedsDisplay:YES];
+}
+
+- (void)stopScanning {
+  if (app_) app_->requestStop();
+}
+
+- (void)chooseStartupLocation {
+  std::string path;
+  if (host_.pickFolder && host_.pickFolder(path) && !path.empty()) {
+    app_->scanPath(path);
+    [self setNeedsDisplay:YES];
+  }
 }
 
 - (void)updateMouse:(NSEvent*)event {
@@ -197,6 +259,12 @@ static SVView* gView = nil;
 
 - (void)mouseMoved:(NSEvent*)event {
   [self updateMouse:event];
+  [self setNeedsDisplay:YES];
+}
+
+- (void)mouseExited:(NSEvent*)event {
+  input_.mouseX = -1;
+  input_.mouseY = -1;
   [self setNeedsDisplay:YES];
 }
 
@@ -292,8 +360,6 @@ static SVView* gView = nil;
                                      kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst, provider, nullptr,
                                      false, kCGRenderingIntentDefault);
     CGContextSaveGState(ctx);
-    CGContextTranslateCTM(ctx, 0, NSHeight(self.bounds));
-    CGContextScaleCTM(ctx, 1, -1);
     CGContextDrawImage(ctx, CGRectMake(0, 0, NSWidth(self.bounds), NSHeight(self.bounds)), image);
     CGContextRestoreGState(ctx);
     CGImageRelease(image);
@@ -339,19 +405,29 @@ static SVView* gView = nil;
 
 @implementation SVDelegate
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
+  bool suppliedPath = false;
   for (int i = 1; i < self.argc; ++i) {
     if (self.argv[i][0] != '-') {
       [gView scanPath:[NSString stringWithUTF8String:self.argv[i]]];
+      suppliedPath = true;
       break;
     }
   }
+  if (!suppliedPath) [gView chooseStartupLocation];
 }
 - (BOOL)application:(NSApplication*)sender openFile:(NSString*)filename {
   if (!gView) return NO;
   [gView scanPath:filename];
   return YES;
 }
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender { return YES; }
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
+  [gView stopScanning];
+  return NSTerminateNow;
+}
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
+  [gView stopScanning];
+  return YES;
+}
 @end
 
 int spaceviewer_main(int argc, char** argv) {
@@ -370,7 +446,8 @@ int spaceviewer_main(int argc, char** argv) {
                     backing:NSBackingStoreBuffered
                       defer:NO];
     window.title = @"SpaceViewer";
-    SVView* view = [[SVView alloc] initWithFrame:rect];
+    SVView* view = [[SVView alloc] initWithFrame:NSMakeRect(0, 0, NSWidth(rect), NSHeight(rect))];
+    view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     window.contentView = view;
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];

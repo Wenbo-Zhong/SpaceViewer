@@ -80,10 +80,10 @@ cmake --build build
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-./build/SpaceViewer
+open build/SpaceViewer.app
 ```
 
-或 `sh build-macos.sh`。Retina 屏使用窗口的 `backingScaleFactor`，位图按物理像素绘制。
+或 `sh build-macos.sh`，生成 `build/SpaceViewer.app`。首次启动可选扫描整个启动磁盘，也可选其他磁盘或文件夹。扫描器最多用 8 个线程并发读取目录。Windows 磁盘扫描显示按容量估算的百分比；macOS 扫描期间显示活动进度条和文件读取速度，完成后进度条填满，不显示估算百分比。访问桌面、文稿、下载目录或外接磁盘时，macOS 会按需显示授权提示。若扫描时遇到系统保护的目录，应用会提示到“系统设置 > 隐私与安全性 > 完全磁盘访问”手动授权，再重新扫描。macOS 不允许应用自行开启完全磁盘访问。Retina 屏使用窗口的 `backingScaleFactor`，位图按物理像素绘制。
 
 ## 许可
 
