@@ -87,6 +87,9 @@ struct Tile {
   uint8_t category = CatOther;
   RectF outer;
   RectF title;
+  double labelOpacity = 1;
+  bool exiting = false;
+  bool container = false;
 };
 
 enum class HotKind {

@@ -26,11 +26,18 @@ bool near(const RectF& a, const RectF& b) {
          std::fabs(a.h - b.h) < 0.4;
 }
 
-RectF collapsed(const RectF& around) {
-  RectF out;
-  out.x = around.x + around.w * 0.5;
-  out.y = around.y + around.h * 0.5;
-  return out;
+RectF project(RectF rect, RectF from, RectF to) {
+  return {to.x + (rect.x - from.x) * to.w / from.w,
+          to.y + (rect.y - from.y) * to.h / from.h,
+          rect.w * to.w / from.w, rect.h * to.h / from.h};
+}
+
+RectF clip(RectF rect, RectF viewport) {
+  double x = std::max(rect.x, viewport.x);
+  double y = std::max(rect.y, viewport.y);
+  double right = std::min(rect.x + rect.w, viewport.x + viewport.w);
+  double bottom = std::min(rect.y + rect.h, viewport.y + viewport.h);
+  return {x, y, std::max(0.0, right - x), std::max(0.0, bottom - y)};
 }
 
 }  // namespace
@@ -40,7 +47,19 @@ uint64_t TileMotion::keyOf(const Tile& tile) {
   return (1ull << 63) | (static_cast<uint64_t>(tile.parent) << 32) | tile.mergeCount;
 }
 
-void TileMotion::setTarget(const std::vector<Tile>& target, double now) {
+void TileMotion::setTarget(const std::vector<Tile>& target, double now, uint32_t view, RectF viewport, bool immediate) {
+  if (immediate) {
+    target_ = target;
+    from_.clear();
+    outgoing_.clear();
+    view_ = view;
+    viewport_ = viewport;
+    navigation_ = false;
+    zoomOut_ = false;
+    active_ = false;
+    return;
+  }
+  const bool changedView = view_ != kNone && view != kNone && view_ != view;
   bool sameTarget = target_.size() == target.size();
   if (sameTarget) {
     for (size_t i = 0; i < target.size(); ++i) {
@@ -51,19 +70,43 @@ void TileMotion::setTarget(const std::vector<Tile>& target, double now) {
       }
     }
   }
-  if (sameTarget) return;
+  if (sameTarget && !changedView) return;
   std::vector<Tile> current = sample(now);
+  navigation_ = false;
+  zoomOut_ = false;
+  outgoing_.clear();
+  viewport_ = viewport;
+  if (changedView && viewport.w > 1 && viewport.h > 1) {
+    for (const Tile& tile : current) {
+      if (!tile.exiting && tile.index == view && tile.outer.w > 1 && tile.outer.h > 1) {
+        cameraFrom_ = tile.outer;
+        cameraTo_ = viewport;
+        navigation_ = true;
+        break;
+      }
+    }
+    if (!navigation_) {
+      for (const Tile& tile : target) {
+        if (tile.index == view_ && tile.outer.w > 1 && tile.outer.h > 1) {
+          cameraFrom_ = viewport;
+          cameraTo_ = tile.outer;
+          navigation_ = true;
+          zoomOut_ = true;
+          break;
+        }
+      }
+    }
+  }
+  view_ = view;
   target_ = target;
   std::unordered_map<uint64_t, RectF> outer;
   std::unordered_map<uint64_t, RectF> title;
   outer.reserve(current.size() * 2 + 1);
   for (const Tile& tile : current) {
-    outer[keyOf(tile)] = tile.outer;
-    title[keyOf(tile)] = tile.title;
-  }
-  std::unordered_map<uint32_t, RectF> byIndex;
-  for (const Tile& tile : current) {
-    if (tile.index != kNone) byIndex[tile.index] = tile.outer;
+    if (!tile.exiting) {
+      outer[keyOf(tile)] = tile.outer;
+      title[keyOf(tile)] = tile.title;
+    }
   }
   from_.clear();
   from_.reserve(target.size());
@@ -76,38 +119,71 @@ void TileMotion::setTarget(const std::vector<Tile>& target, double now) {
       keyed.tile.outer = found->second;
       keyed.tile.title = title[keyed.key];
     } else {
-      RectF origin = collapsed(tile.outer);
-      auto parent = byIndex.find(tile.parent);
-      if (parent != byIndex.end()) origin = collapsed(parent->second);
-      keyed.tile.outer = origin;
-      keyed.tile.title = origin;
-      keyed.tile.title.h = 0;
+      if (navigation_) {
+        RectF origin = project(tile.outer, cameraTo_, cameraFrom_);
+        keyed.tile.outer = origin;
+        keyed.tile.title = project(tile.title, cameraTo_, cameraFrom_);
+        keyed.tile.labelOpacity = 0;
+        from_.push_back(keyed);
+        continue;
+      }
+      keyed.tile.outer = tile.outer;
+      keyed.tile.title = tile.title;
     }
     from_.push_back(keyed);
   }
+  if (navigation_) {
+    for (const Tile& tile : current) {
+      if (tile.exiting) continue;
+      bool retained = false;
+      for (const Tile& next : target) {
+        if (keyOf(next) == keyOf(tile)) { retained = true; break; }
+      }
+      if (!retained) outgoing_.push_back(tile);
+    }
+  }
   start_ = now;
-  duration_ = 0.26;
+  duration_ = navigation_ ? 0.16 : 0.26;
   active_ = true;
 }
 
 std::vector<Tile> TileMotion::sample(double now) const {
   if (!active_ || from_.empty()) return target_;
-  double t = ease((now - start_) / duration_);
+  double progress = std::max(0.0, std::min(1.0, (now - start_) / duration_));
+  double t = navigation_ ? 1.0 - std::pow(1.0 - progress, 3.0) : ease(progress);
   if (t >= 1.0) return target_;
   std::unordered_map<uint64_t, const Keyed*> from;
   from.reserve(from_.size() * 2 + 1);
   for (const Keyed& keyed : from_) from[keyed.key] = &keyed;
   std::vector<Tile> out;
-  out.reserve(target_.size());
+  out.reserve(target_.size() + outgoing_.size());
+  auto appendOutgoing = [&]() {
+    for (const Tile& old : outgoing_) {
+      Tile drawn = old;
+      drawn.outer = clip(lerpRect(old.outer, project(old.outer, cameraFrom_, cameraTo_), t), viewport_);
+      drawn.title = clip(lerpRect(old.title, project(old.title, cameraFrom_, cameraTo_), t), viewport_);
+      drawn.labelOpacity = old.labelOpacity * (1.0 - t);
+      drawn.exiting = true;
+      if (drawn.outer.w > 0 && drawn.outer.h > 0) out.push_back(drawn);
+    }
+  };
+  if (navigation_ && !zoomOut_) appendOutgoing();
   for (const Tile& tile : target_) {
     Tile drawn = tile;
     auto found = from.find(keyOf(tile));
     if (found != from.end()) {
       drawn.outer = lerpRect(found->second->tile.outer, tile.outer, t);
       drawn.title = lerpRect(found->second->tile.title, tile.title, t);
+      drawn.labelOpacity = found->second->tile.labelOpacity +
+                           (1.0 - found->second->tile.labelOpacity) * t;
+    }
+    if (navigation_) {
+      drawn.outer = clip(drawn.outer, viewport_);
+      drawn.title = clip(drawn.title, viewport_);
     }
     out.push_back(drawn);
   }
+  if (navigation_ && zoomOut_) appendOutgoing();
   return out;
 }
 

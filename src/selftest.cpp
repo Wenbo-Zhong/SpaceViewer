@@ -1,10 +1,14 @@
 #include "selftest.hpp"
 
+#include "app.hpp"
 #include "layout.hpp"
+#include "motion.hpp"
 #include "scan.hpp"
 #include "util.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -23,11 +27,13 @@
 namespace {
 
 int gFails = 0;
+std::vector<std::string> gFailureMessages;
 
 void check(bool ok, const char* message) {
   if (!ok) {
     std::fprintf(stderr, "FAIL %s\n", message);
     ++gFails;
+    gFailureMessages.emplace_back(message);
   }
 }
 
@@ -126,7 +132,147 @@ int runSelfTest() {
     if (tile.mergeCount) merged = true;
     if (tile.size <= 1) tiny++;
   }
-  check(!crowdedTiles.empty() && !merged && tiny == 0, "tiny files stay in the parent");
+  check(!crowdedTiles.empty() && merged && tiny == 0, "tiny files aggregate");
+  uint64_t represented = 0;
+  double covered = 0;
+  for (const Tile& tile : crowdedTiles) {
+    represented += tile.size;
+    covered += tile.outer.w * tile.outer.h;
+    double expected = 200.0 * 120.0 * static_cast<double>(tile.size) / 1000200.0;
+    check(std::abs(tile.outer.w * tile.outer.h - expected) < 0.001, "tile proportional bytes");
+  }
+  check(represented == 1000200, "all bytes represented");
+  check(std::abs(covered - 24000.0) < 0.001, "tiles cover parent exactly");
+
+  TreeSnapshot deep;
+  addNode(deep, kNone, "root", kDir, CatDir, 0);
+  uint32_t parent = 0;
+  for (int level = 0; level < 8; ++level) {
+    uint32_t next = addNode(deep, parent, "directory", kDir, CatDir, 0);
+    addNode(deep, parent, "side.bin", 0, CatOther, 100);
+    accountBytes(deep, parent, 100);
+    parent = next;
+  }
+  addNode(deep, parent, "large.bin", 0, CatOther, 100000);
+  accountBytes(deep, parent, 100000);
+  auto deepTiles = layoutTreemap(deep, computeVisible(deep, Filter{}), 0,
+                                 RectF{0, 0, 1600, 1000}, 18, 8, 8);
+  for (const Tile& tile : deepTiles) {
+    if (tile.index == kNone) continue;
+    int depth = 0;
+    for (uint32_t n = tile.index; deep.nodes[n].parent != kNone; n = deep.nodes[n].parent) ++depth;
+    check(depth <= 3, "overview depth limited to three levels");
+  }
+  TreeSnapshot chain;
+  addNode(chain, kNone, "root", kDir, CatDir, 0);
+  uint32_t chainDir = addNode(chain, 0, "Steam", kDir, CatDir, 0);
+  uint32_t chainSub = addNode(chain, chainDir, "steamapps", kDir, CatDir, 0);
+  addNode(chain, chainSub, "data.pak", 0, CatOther, 100);
+  accountBytes(chain, chainSub, 100);
+  auto chainTiles = layoutTreemap(chain, computeVisible(chain, Filter{}), 0,
+                                  RectF{0, 0, 640, 480}, 18, 8, 8);
+  check(chainTiles.size() == 1 && chainTiles[0].index == chainDir,
+        "single-child directory remains a readable block");
+
+  auto expandedChain = layoutTreemap(chain, computeVisible(chain, Filter{}), 0,
+                                     RectF{0, 0, 640, 480}, 18, 8, 8, {chainDir});
+  check(expandedChain.size() == 2 && expandedChain[0].index == chainDir &&
+        expandedChain[1].index == chainSub, "single-child folder expands locally");
+  check(expandedChain[0].outer.w == chainTiles[0].outer.w &&
+        expandedChain[0].outer.h == chainTiles[0].outer.h,
+        "local expansion preserves folder area");
+  auto expandedDeep = layoutTreemap(chain, computeVisible(chain, Filter{}), 0,
+                                    RectF{0, 0, 640, 480}, 18, 8, 8, {chainDir, chainSub});
+  check(expandedDeep.size() == 3 && expandedDeep.back().index == 3,
+        "explicit expansion reveals the next path component");
+
+  uint32_t branch = addNode(chain, 0, "Games", kDir, CatDir, 0);
+  uint32_t branchChild = addNode(chain, branch, "Game", kDir, CatDir, 0);
+  auto activePath = expansionPath(chain, 0, chainSub);
+  check(activePath.size() == 2 && activePath[0] == chainDir && activePath[1] == chainSub,
+        "expanding a descendant retains its ancestors");
+  activePath = expansionPath(chain, 0, branchChild);
+  check(activePath.size() == 2 && activePath[0] == branch && activePath[1] == branchChild &&
+        std::find(activePath.begin(), activePath.end(), chainDir) == activePath.end(),
+        "switching branches retracts previous manual expansion");
+  activePath = expansionPath(chain, 0, branch);
+  check(activePath.size() == 1, "selecting an ancestor retracts deeper detail");
+
+  Tile localParent;
+  localParent.index = 10; localParent.parent = 0; localParent.flags = kDir;
+  localParent.outer = {10, 20, 300, 400};
+  Tile localNeighbor = localParent;
+  localNeighbor.index = 11; localNeighbor.outer.x = 310;
+  Tile localChild;
+  localChild.index = 12; localChild.parent = 10;
+  localChild.outer = {13, 38, 294, 379};
+  TileMotion localMotion;
+  localMotion.setTarget({localParent, localNeighbor}, 0, 0, {10, 20, 600, 400});
+  localParent.title = {10, 20, 300, 18}; localParent.container = true;
+  localMotion.setTarget({localParent, localChild, localNeighbor}, 1, 0, {10, 20, 600, 400}, true);
+  for (const Tile& tile : localMotion.sample(1)) {
+    if (tile.index == 12) {
+      check(tile.outer.x == localChild.outer.x && tile.outer.w == localChild.outer.w &&
+            tile.outer.y == localChild.outer.y && tile.outer.h == localChild.outer.h && tile.labelOpacity == 1,
+            "local detail appears at full size and opacity on the click frame");
+    }
+    if (tile.index == 11) check(tile.outer.x == 310 && tile.outer.w == 300,
+                               "local reveal leaves neighbors fixed");
+  }
+  check(!localMotion.running(1), "single click schedules no animation frames");
+  localMotion.setTarget({localNeighbor}, 1.01, 0, {10, 20, 600, 400}, true);
+  check(localMotion.sample(1.01).size() == 1 && !localMotion.running(1.01),
+        "branch retraction is immediate without outgoing tiles");
+
+  // Navigation starts in the clicked region, keeps surrounding tiles until
+  // they leave the viewport, and can be reversed before the animation ends.
+  RectF viewport{10, 20, 600, 400};
+  Tile folder;
+  folder.index = 1; folder.parent = 0; folder.flags = kDir;
+  folder.outer = {10, 20, 300, 400};
+  Tile sibling = folder;
+  sibling.index = 2; sibling.outer = {310, 20, 300, 400};
+  Tile child;
+  child.index = 3; child.parent = 1;
+  child.outer = viewport;
+  TileMotion motion;
+  motion.setTarget({folder, sibling}, 0, 0, viewport);
+  motion.setTarget({child}, 1, 1, viewport);
+  auto startTiles = motion.sample(1);
+  check(startTiles.size() == 3, "zoom retains outgoing context");
+  for (const Tile& tile : startTiles) {
+    if (tile.index == 3) {
+      check(std::abs(tile.outer.x - folder.outer.x) < 0.001 &&
+            std::abs(tile.outer.w - folder.outer.w) < 0.001,
+            "new child starts inside clicked folder");
+      check(tile.labelOpacity == 0, "new labels fade in");
+    }
+  }
+  for (double time : {1.0, 1.05, 1.2, 1.41}) {
+    for (const Tile& tile : motion.sample(time)) {
+      check(tile.outer.x >= viewport.x && tile.outer.y >= viewport.y &&
+            tile.outer.x + tile.outer.w <= viewport.x + viewport.w + 0.001 &&
+            tile.outer.y + tile.outer.h <= viewport.y + viewport.h + 0.001,
+            "zoom stays inside map");
+    }
+  }
+  auto finishTiles = motion.sample(1.5);
+  check(finishTiles.size() == 1 && finishTiles[0].outer.w == viewport.w &&
+        !motion.running(1.5), "zoom finishes at exact target");
+  motion.setTarget({folder, sibling}, 2, 0, viewport);
+  check(motion.sample(2).back().exiting, "return retains shrinking content above parent");
+  auto beforeInterrupt = motion.sample(2.1);
+  motion.setTarget({child}, 2.1, 1, viewport);
+  auto afterInterrupt = motion.sample(2.1);
+  for (const Tile& tile : afterInterrupt) {
+    if (tile.index == 1 && tile.exiting) {
+      for (const Tile& old : beforeInterrupt) {
+        if (old.index == 1 && !old.exiting)
+          check(std::abs(tile.outer.w - old.outer.w) < 0.001,
+                "interrupted zoom continues from current geometry");
+      }
+    }
+  }
 
   std::string root = makeTemp();
   std::string sep = 
@@ -162,10 +308,116 @@ int runSelfTest() {
   }
   check(total == 185, "scan bytes");
 
+  // Verify the completed scan continues to track real on-disk size changes.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  uint64_t beforeGeneration = snap ? snap->changeGen : 0;
+  writeFile(root + sep + "sub" + sep + "c.txt", std::string(225, 'c'));
+  bool watchedGrowth = false;
+  for (int i = 0; i < 150; ++i) {
+    auto updated = scanner.snapshot();
+    if (updated && updated->changeGen > beforeGeneration && updated->nodes[0].size == 385 &&
+        !updated->changed.empty()) { watchedGrowth = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  check(watchedGrowth, "post-scan watcher updates ancestor size and reports changed path");
+  writeFile(root + sep + "sub" + sep + "c.txt", std::string(25, 'c'));
+  bool watchedShrink = false;
+  for (int i = 0; i < 150; ++i) {
+    auto updated = scanner.snapshot();
+    if (updated && updated->nodes[0].size == 185) { watchedShrink = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  check(watchedShrink, "post-scan watcher tracks shrinking files");
+
+  App clickApp;
+  Host clickHost;
+  std::string clickTitle;
+  clickHost.setTitle = [&](const std::string& title) { clickTitle = title; };
+  Input clickInput;
+  clickInput.windowW = 1200; clickInput.windowH = 850;
+  clickInput.mouseX = -1; clickInput.mouseY = -1;
+  Frame clickFrame;
+  clickApp.scanPath(root);
+  bool foundFolder = false;
+  for (int i = 0; i < 100 && !foundFolder; ++i) {
+    clickInput.timeSec = i * 0.03;
+    clickApp.update(clickInput, clickHost, clickFrame);
+    for (const auto& text : clickFrame.texts) if (text.utf8 == "sub") foundFolder = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  clickInput.timeSec = 4;
+  clickApp.update(clickInput, clickHost, clickFrame);
+  for (const auto& text : clickFrame.texts) {
+    if (text.utf8 == "sub") {
+      clickInput.mouseX = text.x + text.w / 2;
+      clickInput.mouseY = text.y + text.h / 2;
+    }
+  }
+  check(foundFolder && clickInput.mouseX >= 0, "folder available for click regression");
+  std::string overviewTitle = clickTitle;
+  clickInput.leftPressed = true;
+  clickInput.timeSec = 4.1;
+  clickApp.update(clickInput, clickHost, clickFrame);
+  check(clickTitle == overviewTitle, "single click preserves current root");
+  clickInput.timeSec = 4.2;
+  clickApp.update(clickInput, clickHost, clickFrame);
+  check(clickTitle != overviewTitle && clickTitle.find("sub") != std::string::npos,
+        "double click enters original folder even after local expansion");
+
+  clickInput.leftPressed = false;
+  clickInput.timeSec = 4.5;
+  clickApp.update(clickInput, clickHost, clickFrame);
+  bool rootHeader = false;
+  bool fileBelowHeader = false;
+  int rootHeaderBottom = 0;
+  for (const auto& text : clickFrame.texts) {
+    if (text.utf8.find("sub  ") == 0) {
+      rootHeader = true;
+      rootHeaderBottom = text.y + text.h;
+    }
+  }
+  for (const auto& text : clickFrame.texts) {
+    if (text.utf8 == "c.txt" && text.y >= rootHeaderBottom) fileBelowHeader = true;
+  }
+  check(rootHeader && fileBelowHeader, "file-only directory retains root header above its files");
+  clickInput.windowW = 700; clickInput.windowH = 500; clickInput.dpi = 144;
+  clickInput.timeSec = 5;
+  clickApp.update(clickInput, clickHost, clickFrame);
+  rootHeader = false;
+  for (const auto& text : clickFrame.texts)
+    if (text.utf8.find("sub  ") == 0) rootHeader = true;
+  check(rootHeader, "root header survives resize and DPI change");
+
+  clickInput.mouseX = -1; clickInput.mouseY = -1; clickInput.timeSec = 6;
+  clickApp.update(clickInput, clickHost, clickFrame);
+  int sampleX = -1, sampleY = -1;
+  for (const auto& text : clickFrame.texts) {
+    if (text.utf8 == "c.txt") { sampleX = text.x + text.w / 2; sampleY = text.y; }
+  }
+  if (sampleX >= 0 && sampleY >= 0) {
+    auto pixelAt = [&]() { return clickFrame.bgra[static_cast<size_t>(sampleY) * clickFrame.width + sampleX] & 255; };
+    uint32_t baseBrightness = pixelAt();
+    clickInput.mouseX = sampleX; clickInput.mouseY = sampleY; clickInput.timeSec = 6.01;
+    clickApp.update(clickInput, clickHost, clickFrame);
+    uint32_t peakBrightness = pixelAt();
+    clickInput.timeSec = 6.21;
+    clickApp.update(clickInput, clickHost, clickFrame);
+    uint32_t settledBrightness = pixelAt();
+    check(peakBrightness > settledBrightness && settledBrightness > baseBrightness,
+          "hover peaks then settles above ordinary brightness");
+    check(!clickApp.animating(), "settled hover does not continuously repaint");
+    clickInput.mouseX = -1; clickInput.mouseY = -1; clickInput.timeSec = 6.3;
+    clickApp.update(clickInput, clickHost, clickFrame);
+    check(pixelAt() == baseBrightness, "leaving hover restores original brightness");
+  } else check(false, "hover brightness fixture visible");
+
   std::FILE* end = std::fopen("selftest-result.txt", "wb");
   if (end) {
     if (gFails == 0) std::fputs("ok\n", end);
-    else std::fprintf(end, "failed %d\n", gFails);
+    else {
+      std::fprintf(end, "failed %d\n", gFails);
+      for (const auto& message : gFailureMessages) std::fprintf(end, "%s\n", message.c_str());
+    }
     std::fclose(end);
   }
   if (gFails == 0) {

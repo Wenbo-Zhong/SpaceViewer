@@ -525,8 +525,12 @@ void Scanner::Impl::watch() {
     }
     return id;
   };
+  bool batchChanged = false;
   auto note = [&](uint32_t id) {
-    if (id != kNone) live.changed.push_back(id);
+    if (id == kNone) return;
+    if (!batchChanged) live.changed.clear();
+    batchChanged = true;
+    live.changed.push_back(id);
   };
   auto refreshFree = [&]() {
     if (!isVolumeRoot(root)) return;
@@ -548,15 +552,17 @@ void Scanner::Impl::watch() {
     live.nodes[0].size = counted + unknown;
   };
 
-  while (!cancel.load()) {
-    OVERLAPPED overlapped{};
-    overlapped.hEvent = event;
+  OVERLAPPED overlapped{};
+  overlapped.hEvent = event;
+  auto arm = [&]() {
     ResetEvent(event);
-    BOOL armed = ReadDirectoryChangesW(dir, buffer.data(), static_cast<DWORD>(buffer.size()), TRUE,
-                                        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-                                            FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE,
-                                        nullptr, &overlapped, nullptr);
-    if (!armed) break;
+    return ReadDirectoryChangesW(dir, buffer.data(), static_cast<DWORD>(buffer.size()), TRUE,
+                                 FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                                     FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                                 nullptr, &overlapped, nullptr) != FALSE;
+  };
+  bool armed = arm();
+  while (!cancel.load() && armed) {
     DWORD got = 0;
     for (;;) {
       DWORD wait = WaitForSingleObject(event, 200);
@@ -573,7 +579,7 @@ void Scanner::Impl::watch() {
       break;
     }
     if (cancel.load()) break;
-    if (got == 0) continue;
+    if (got == 0) { armed = arm(); continue; }
 
     struct Ev {
       DWORD action;
@@ -590,10 +596,10 @@ void Scanner::Impl::watch() {
       info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(reinterpret_cast<char*>(info) + info->NextEntryOffset);
     }
 
-    {
-      std::lock_guard<std::mutex> lock(treeMu);
-      live.changed.clear();
-    }
+    // Re-arm before inspecting files: writes that finish while this batch is
+    // processed must still generate a subsequent size update.
+    armed = arm();
+    batchChanged = false;
     for (const Ev& ev : events) {
       if (cancel.load()) break;
       std::wstring full = joinWide(root, ev.rel);
@@ -632,7 +638,7 @@ void Scanner::Impl::watch() {
         int64_t delta = static_cast<int64_t>(size) - static_cast<int64_t>(live.nodes[id].size);
         live.nodes[id].size = size;
         bubble(live, live.nodes[id].parent, delta);
-        note(id);
+        if (delta != 0) note(id);
         continue;
       }
       uint32_t parent = kNone;
@@ -653,7 +659,7 @@ void Scanner::Impl::watch() {
           int64_t delta = static_cast<int64_t>(size) - static_cast<int64_t>(live.nodes[existing].size);
           live.nodes[existing].size = size;
           bubble(live, parent, delta);
-          note(existing);
+          if (delta != 0) note(existing);
         }
         continue;
       }
@@ -681,7 +687,7 @@ void Scanner::Impl::watch() {
     {
       std::lock_guard<std::mutex> lock(treeMu);
       refreshFree();
-      if (!live.changed.empty()) live.changeGen++;
+      if (batchChanged) live.changeGen++;
     }
     publish(true);
   }

@@ -229,7 +229,7 @@ uint8_t categoryFromName(std::string_view name) {
 
 uint32_t categoryColor(uint8_t category) {
   switch (category) {
-    case CatDir: return 0x8fb7e6;
+    case CatDir: return 0xc7a580;
     case CatImage: return 0x7dcea0;
     case CatVideo: return 0xc39bd3;
     case CatAudio: return 0xf5cba7;
@@ -238,7 +238,7 @@ uint32_t categoryColor(uint8_t category) {
     case CatCode: return 0x76d7c4;
     case CatExe: return 0xf1948a;
     case CatFree: return 0xe5e8eb;
-    default: return 0xb0b8c0;
+    default: return 0x91b3cf;
   }
 }
 

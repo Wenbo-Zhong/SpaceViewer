@@ -523,6 +523,7 @@ int spaceviewer_main(int, char**) {
   cls.lpfnWndProc = wndProc;
   cls.hInstance = GetModuleHandleW(nullptr);
   cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  cls.hIcon = LoadIconW(cls.hInstance, MAKEINTRESOURCEW(101));
   cls.lpszClassName = L"SpaceViewer";
   cls.hbrBackground = nullptr;
   RegisterClassW(&cls);
@@ -530,6 +531,9 @@ int spaceviewer_main(int, char**) {
   HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, L"SpaceViewer", L"SpaceViewer", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                               CW_USEDEFAULT, CW_USEDEFAULT, 1100, 740, nullptr, nullptr, cls.hInstance, &state);
   state.hwnd = hwnd;
+  SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(LoadImageW(
+      cls.hInstance, MAKEINTRESOURCEW(101), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+      GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR)));
   state.app.setWake([hwnd]() { PostMessageW(hwnd, WM_APP + 1, 0, 0); });
   int dpi = windowDpi(hwnd);
   RECT wanted{0, 0, MulDiv(1100, dpi, 96), MulDiv(740, dpi, 96)};

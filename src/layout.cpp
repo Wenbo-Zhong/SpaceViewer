@@ -33,11 +33,11 @@ double worst(const std::vector<double>& row, double side) {
 }
 
 void layoutDir(const TreeSnapshot& tree, const std::vector<uint64_t>& visible, uint32_t dir, RectF area,
-               double titlePx, double minW, double minH, std::vector<Tile>& tiles);
+               double titlePx, double minW, double minH, int depth, const std::vector<uint32_t>& expanded, std::vector<Tile>& tiles);
 
 void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible, uint32_t parent,
                   const std::vector<Item>& items, RectF area, double titlePx, double minW, double minH,
-                  bool recurse, std::vector<Tile>& tiles) {
+                  int depth, const std::vector<uint32_t>& expanded, std::vector<Tile>& tiles) {
   if (items.empty() || area.w <= 1 || area.h <= 1) return;
   const size_t n = items.size();
   size_t cursor = 0;
@@ -67,14 +67,18 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
         tile.flags = item.flags;
         tile.category = item.category;
         tile.outer = outer;
-        const bool nest = recurse && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
-                          outer.w >= minW * 2 && outer.h >= titlePx + minH + 4;
+        const bool explicitExpand = std::find(expanded.begin(), expanded.end(), item.index) != expanded.end();
+        const bool nest = (depth < 2 || explicitExpand) && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
+                          (tree.nodes[item.index].childCount > 1 || explicitExpand) &&
+                          outer.w >= (explicitExpand ? minW * 2 : std::max(100.0, minW * 4)) &&
+                          outer.h >= titlePx + (explicitExpand ? minH + 4 : std::max(64.0, minH * 4));
+        tile.container = nest;
         double titleH = nest ? titlePx : 0;
         tile.title = RectF{outer.x, outer.y, outer.w, titleH};
         tiles.push_back(tile);
         if (nest) {
-          RectF inner{outer.x + 1, outer.y + titleH, outer.w - 2, outer.h - titleH - 1};
-          if (inner.w >= minW && inner.h >= minH) layoutDir(tree, visible, item.index, inner, titlePx, minW, minH, tiles);
+          RectF inner{outer.x + 3, outer.y + titleH, outer.w - 6, outer.h - titleH - 3};
+          if (inner.w >= minW && inner.h >= minH) layoutDir(tree, visible, item.index, inner, titlePx, minW, minH, depth + 1, expanded, tiles);
         }
         y += height;
       }
@@ -98,14 +102,18 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
         tile.flags = item.flags;
         tile.category = item.category;
         tile.outer = outer;
-        const bool nest = recurse && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
-                          outer.w >= minW * 2 && outer.h >= titlePx + minH + 4;
+        const bool explicitExpand = std::find(expanded.begin(), expanded.end(), item.index) != expanded.end();
+        const bool nest = (depth < 2 || explicitExpand) && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
+                          (tree.nodes[item.index].childCount > 1 || explicitExpand) &&
+                          outer.w >= (explicitExpand ? minW * 2 : std::max(100.0, minW * 4)) &&
+                          outer.h >= titlePx + (explicitExpand ? minH + 4 : std::max(64.0, minH * 4));
+        tile.container = nest;
         double titleH = nest ? titlePx : 0;
         tile.title = RectF{outer.x, outer.y, outer.w, titleH};
         tiles.push_back(tile);
         if (nest) {
-          RectF inner{outer.x + 1, outer.y + titleH, outer.w - 2, outer.h - titleH - 1};
-          if (inner.w >= minW && inner.h >= minH) layoutDir(tree, visible, item.index, inner, titlePx, minW, minH, tiles);
+          RectF inner{outer.x + 3, outer.y + titleH, outer.w - 6, outer.h - titleH - 3};
+          if (inner.w >= minW && inner.h >= minH) layoutDir(tree, visible, item.index, inner, titlePx, minW, minH, depth + 1, expanded, tiles);
         }
         x += width;
       }
@@ -114,7 +122,7 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
     }
   };
 
-  while (cursor < n && box.w > 0.5 && box.h > 0.5) {
+  while (cursor < n && box.w > 1e-9 && box.h > 1e-9) {
     std::vector<double> withNext;
     withNext.reserve(row.size() + 1);
     for (int index : row) withNext.push_back(items[static_cast<size_t>(index)].area);
@@ -134,43 +142,13 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
   if (!row.empty()) emitRow(row);
 }
 
-bool blocksFit(const std::vector<Tile>& tiles, uint32_t dir, double minW, double minH) {
-  bool any = false;
-  for (const Tile& tile : tiles) {
-    if (tile.parent != dir) continue;
-    any = true;
-    if (tile.outer.w + 0.5 < minW || tile.outer.h + 0.5 < minH) return false;
-  }
-  return any;
-}
-
 struct Child {
   uint32_t index;
   uint64_t size;
 };
 
-std::vector<Item> takeLargest(const TreeSnapshot& tree, const std::vector<Child>& children, int count, double pixels) {
-  std::vector<Item> items;
-  uint64_t sum = 0;
-  int n = std::min(count, static_cast<int>(children.size()));
-  for (int i = 0; i < n; ++i) sum += children[static_cast<size_t>(i)].size;
-  if (sum == 0) return items;
-  items.reserve(static_cast<size_t>(n));
-  for (int i = 0; i < n; ++i) {
-    const Child& child = children[static_cast<size_t>(i)];
-    Item item;
-    item.index = child.index;
-    item.size = child.size;
-    item.flags = tree.nodes[child.index].flags;
-    item.category = tree.nodes[child.index].category;
-    item.area = pixels * (static_cast<double>(child.size) / static_cast<double>(sum));
-    items.push_back(item);
-  }
-  return items;
-}
-
 void layoutDir(const TreeSnapshot& tree, const std::vector<uint64_t>& visible, uint32_t dir, RectF area,
-               double titlePx, double minW, double minH, std::vector<Tile>& tiles) {
+               double titlePx, double minW, double minH, int depth, const std::vector<uint32_t>& expanded, std::vector<Tile>& tiles) {
   if (dir >= tree.nodes.size() || area.w <= 1 || area.h <= 1) return;
   if (minW < 8) minW = 8;
   if (minH < 8) minH = 8;
@@ -185,41 +163,42 @@ void layoutDir(const TreeSnapshot& tree, const std::vector<uint64_t>& visible, u
             [](const Child& a, const Child& b) { return a.size > b.size; });
 
   const double pixels = std::max(1.0, area.w * area.h);
-  int maxK = static_cast<int>(children.size());
-  int byArea = static_cast<int>(pixels / (minW * minH));
-  if (byArea < 1) byArea = 1;
-  if (maxK > byArea) maxK = byArea;
-  if (maxK > 800) maxK = 800;
-
-  auto acceptable = [&](int count) {
-    std::vector<Tile> trial;
-    std::vector<Item> items = takeLargest(tree, children, count, pixels);
-    emitChildren(tree, visible, dir, items, area, titlePx, minW, minH, false, trial);
-    return blocksFit(trial, dir, minW, minH);
-  };
-
-  int best = 1;
-  if (acceptable(1)) {
-    int lo = 1;
-    int hi = maxK;
-    while (lo <= hi) {
-      int mid = (lo + hi) / 2;
-      if (acceptable(mid)) {
-        best = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
+  // Keep the complete byte total: omitted entries retain their proportional area.
+  uint64_t total = 0;
+  for (const Child& child : children) total += child.size;
+  if (!total) return;
+  std::vector<Item> items;
+  Item remainder;
+  remainder.index = kNone;
+  for (const Child& child : children) {
+    const double childArea = pixels * (static_cast<double>(child.size) / total);
+    if (childArea < minW * minH || items.size() >= 800) {
+      remainder.size += child.size;
+      ++remainder.mergeCount;
+      continue;
     }
+    Item item;
+    item.index = child.index;
+    item.size = child.size;
+    item.flags = tree.nodes[child.index].flags;
+    item.category = tree.nodes[child.index].category;
+    item.area = childArea;
+    items.push_back(item);
   }
-  std::vector<Item> items = takeLargest(tree, children, best, pixels);
-  emitChildren(tree, visible, dir, items, area, titlePx, minW, minH, true, tiles);
+  if (remainder.mergeCount) {
+    remainder.area = pixels * (static_cast<double>(remainder.size) / total);
+    items.push_back(remainder);
+  }
+  std::stable_sort(items.begin(), items.end(),
+                   [](const Item& a, const Item& b) { return a.size > b.size; });
+  emitChildren(tree, visible, dir, items, area, titlePx, minW, minH, depth, expanded, tiles);
 }
 
 }  // namespace
 
 std::vector<Tile> layoutTreemap(const TreeSnapshot& tree, const std::vector<uint64_t>& visible, uint32_t root,
-                                const RectF& area, double titlePx, double minW, double minH) {
+                                const RectF& area, double titlePx, double minW, double minH,
+                                const std::vector<uint32_t>& expanded) {
   std::vector<Tile> tiles;
   if (root >= tree.nodes.size()) return tiles;
   if ((tree.nodes[root].flags & kDir) == 0) {
@@ -232,6 +211,20 @@ std::vector<Tile> layoutTreemap(const TreeSnapshot& tree, const std::vector<uint
     tiles.push_back(tile);
     return tiles;
   }
-  layoutDir(tree, visible, root, area, titlePx, minW, minH, tiles);
+  layoutDir(tree, visible, root, area, titlePx, minW, minH, 0, expanded, tiles);
   return tiles;
+}
+
+std::vector<uint32_t> expansionPath(const TreeSnapshot& tree, uint32_t root, uint32_t selected) {
+  std::vector<uint32_t> path;
+  uint32_t index = selected;
+  while (index != root && index != kNone && index < tree.nodes.size()) {
+    if (!(tree.nodes[index].flags & kDir)) return {};
+    path.push_back(index);
+    index = tree.nodes[index].parent;
+    if (path.size() > tree.nodes.size()) return {};
+  }
+  if (index != root) return {};
+  std::reverse(path.begin(), path.end());
+  return path;
 }

@@ -13,6 +13,7 @@
 #include <cmath>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 namespace {
 
@@ -68,6 +69,58 @@ void strokeRect(Frame& frame, int x, int y, int w, int h, uint32_t rgb, int thic
   fillRect(frame, x, y + h - thickness, w, thickness, rgb);
   fillRect(frame, x, y, thickness, h, rgb);
   fillRect(frame, x + w - thickness, y, thickness, h, rgb);
+}
+
+void roundRect(Frame& frame, int x, int y, int w, int h, int radius, uint32_t color) {
+  radius = std::max(0, std::min(radius, std::min(w, h) / 2));
+  for (int row = 0; row < h; ++row) {
+    int dy = row < radius ? radius - row - 1 : row >= h - radius ? row - (h - radius) : 0;
+    int inset = dy ? radius - static_cast<int>(std::sqrt(radius * radius - dy * dy)) : 0;
+    fillRect(frame, x + inset, y + row, w - inset * 2, 1, color);
+  }
+}
+
+void toolbarIcon(Frame& frame, int x, int y, int size, HotKind kind, uint32_t ink, uint32_t tint) {
+  auto line = [&](double ax, double ay, double bx, double by) {
+    int steps = std::max(1, static_cast<int>(std::hypot(bx - ax, by - ay) * size));
+    int weight = std::max(1, size / 13);
+    for (int i = 0; i <= steps; ++i) {
+      double t = static_cast<double>(i) / steps;
+      fillRect(frame, x + static_cast<int>((ax + (bx - ax) * t) * size) - weight / 2,
+               y + static_cast<int>((ay + (by - ay) * t) * size) - weight / 2, weight, weight, ink);
+    }
+  };
+  auto box = [&](double a, double b, double w, double h) {
+    line(a,b,a+w,b); line(a+w,b,a+w,b+h); line(a+w,b+h,a,b+h); line(a,b+h,a,b);
+  };
+  switch (kind) {
+    case HotKind::Open:
+      roundRect(frame,x+size/10,y+size/3,size*4/5,size/2,size/12,tint);
+      line(.1,.8,.1,.22); line(.1,.22,.4,.22); line(.4,.22,.5,.34); line(.5,.34,.88,.34);
+      line(.1,.8,.78,.8); line(.78,.8,.94,.42); line(.94,.42,.27,.42); line(.27,.42,.1,.8); break;
+    case HotKind::Drives:
+      roundRect(frame,x+size/8,y+size/5,size*3/4,size*3/5,size/10,tint);
+      box(.13,.2,.74,.6); line(.13,.59,.87,.59); line(.66,.7,.73,.7); break;
+    case HotKind::Back: case HotKind::Forward: {
+      bool back = kind == HotKind::Back;
+      double a = back ? .2 : .8, b = back ? .8 : .2;
+      line(a,.5,b,.5); line(a,.5,.5,.2); line(a,.5,.5,.8); break;
+    }
+    case HotKind::Up:
+      line(.5,.83,.5,.17); line(.5,.17,.2,.47); line(.5,.17,.8,.47); break;
+    case HotKind::Rescan:
+      for (int i=0;i<32;++i) {
+        double a=(35+i*9)*3.141592653589793/180, b=(35+(i+1)*9)*3.141592653589793/180;
+        line(.5+.33*std::cos(a),.5+.33*std::sin(a),.5+.33*std::cos(b),.5+.33*std::sin(b));
+      }
+      line(.81,.18,.81,.42); line(.81,.42,.57,.42); break;
+    case HotKind::Stop:
+      roundRect(frame,x+size/4,y+size/4,size/2,size/2,size/12,ink); break;
+    case HotKind::Export:
+      line(.18,.51,.18,.84); line(.18,.84,.83,.84); line(.83,.84,.83,.51);
+      line(.5,.65,.5,.12); line(.5,.12,.27,.35); line(.5,.12,.73,.35); break;
+    default: break;
+  }
 }
 
 void drawText(Frame& frame, int x, int y, int w, int h, const std::string& text, uint32_t rgb, int fontPx,
@@ -193,13 +246,16 @@ struct App::State {
   TileMotion motion;
   bool frameAnim = false;
   uint64_t seenChange = 0;
-  double flashUntil = 0;
-  std::vector<uint32_t> flashing;
+  std::unordered_map<uint32_t, double> changes;
+  uint32_t hovered = kNone;
+  double hoverSince = 0;
   std::vector<uint32_t> back;
   std::vector<uint32_t> forward;
   std::vector<VolumeEntry> drives;
   bool driveOpen = false;
   uint32_t view = 0;
+  std::vector<uint32_t> expanded;
+  bool snapLayout = false;
   uint32_t selected = kNone;
   int menuIndex = -1;
   bool menuPending = false;
@@ -236,6 +292,10 @@ struct App::State {
     if (pathText.empty()) return;
     back.clear();
     forward.clear();
+    expanded.clear();
+    changes.clear();
+    seenChange = 0;
+    hovered = kNone;
     view = 0;
     selected = kNone;
     driveOpen = false;
@@ -408,6 +468,10 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
       s.lastX = input.mouseX;
       s.lastY = input.mouseY;
       if (second) {
+        // The first click may have revealed a child under the cursor. The
+        // double click still belongs to the folder that received the first.
+        if (s.shown && previousSelected < s.shown->nodes.size() &&
+            (s.shown->nodes[previousSelected].flags & kDir)) s.navigate(previousSelected);
         s.lastZoom = false;
       } else if (!hot) {
         s.focus = Focus::None;
@@ -510,7 +574,8 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
               s.selected = hot->index;
               bool zoom = (node.flags & kDir) && !(node.flags & (kFree | kPending));
               if (zoom) {
-                s.navigate(hot->index);
+                s.expanded = expansionPath(*s.shown, s.view, hot->index);
+                s.snapLayout = true;
                 s.lastZoom = true;
               } else {
                 s.lastZoom = false;
@@ -570,14 +635,17 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   const int width = std::max(1, input.windowW);
   const int height = std::max(1, input.windowH);
   frame.resize(width, height, 0xf3f5f7);
-  const int gap = scaled(input.dpi, 6);
-  const int row1 = scaled(input.dpi, 34);
+  const int gap = scaled(input.dpi, 8);
+  const int row1 = scaled(input.dpi, 64);
   const int row2 = scaled(input.dpi, 30);
   const int statusH = scaled(input.dpi, 26);
-  const int top = gap + row1 + gap + row2 + gap;
+  const bool pathBelow = width < scaled(input.dpi, 940);
+  const int pathRow = pathBelow ? scaled(input.dpi, 32) + gap : 0;
+  const int top = gap + row1 + gap + pathRow + row2 + gap;
   const int font = std::max(11, scaled(input.dpi, 13));
-  const int titlePx = std::max(12.0, static_cast<double>(scaled(input.dpi, 16)));
-  fillRect(frame, 0, 0, width, top, 0xf7f8fa);
+  const int titlePx = std::max(12.0, static_cast<double>(scaled(input.dpi, 18)));
+  fillRect(frame, 0, 0, width, top, 0xf8fafc);
+  fillRect(frame, 0, gap + row1 + gap / 2, width, 1, 0xe5eaf0);
   fillRect(frame, 0, height - statusH, width, statusH, 0xe7ebf0);
   fillRect(frame, 0, top, width, 1, 0xd0d7de);
   fillRect(frame, 0, height - statusH, width, 1, 0xd0d7de);
@@ -594,12 +662,20 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     hot.driveIndex = drive;
     next.push_back(hot);
   };
+  const double toolScale = std::min(1.0, static_cast<double>(std::max(1, width - gap * 2)) /
+                                            (scaled(input.dpi, 528) + gap * 8));
   auto button = [&](int& x, int y, int w, int h, const char* label, HotKind kind, bool enabled) {
+    w = std::max(1, static_cast<int>(w * toolScale));
     bool hover = enabled && input.mouseX >= x && input.mouseY >= y && input.mouseX < x + w && input.mouseY < y + h;
-    uint32_t bg = !enabled ? 0xeef1f4 : hover ? 0xd6e4f5 : 0xe7edf3;
-    fillRect(frame, x, y, w, h, bg);
-    strokeRect(frame, x, y, w, h, 0xc5ced6, 1);
-    drawText(frame, x + 2, y, w - 4, h, label, enabled ? 0x1f2933 : 0x90a4ae, font, true);
+    const bool primary = kind == HotKind::Open;
+    uint32_t bg = hover ? 0xe5effa : primary ? 0xeaf2fc : 0xf8fafc;
+    roundRect(frame, x, y, w, h, scaled(input.dpi, 7), bg);
+    uint32_t ink = !enabled ? 0xb6c0cc : kind == HotKind::Stop ? 0xc36b63 : 0x35658e;
+    int iconSize = scaled(input.dpi, 24);
+    toolbarIcon(frame, x + (w - iconSize) / 2, y + scaled(input.dpi, 7), iconSize, kind,
+                ink, enabled ? 0xd6e6f7 : 0xe9edf2);
+    drawText(frame, x + 2, y + scaled(input.dpi, 36), w - 4, scaled(input.dpi, 24),
+             label, enabled ? 0x34465b : 0xaab5c1, font, true);
     if (enabled) addHot(x, y, w, h, kind);
     x += w + gap;
   };
@@ -614,24 +690,28 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   button(x, y, scaled(input.dpi, 64), row1, zh::back(), HotKind::Back, !s.back.empty());
   button(x, y, scaled(input.dpi, 64), row1, zh::forward(), HotKind::Forward, !s.forward.empty());
   button(x, y, scaled(input.dpi, 64), row1, zh::up(), HotKind::Up, hasTree && s.view != 0);
-  button(x, y, scaled(input.dpi, 96), row1, zh::rescan(), HotKind::Rescan, !s.path.text.empty());
-  button(x, y, scaled(input.dpi, 88), row1, s.scanner.stopRequested() ? zh::stopping() : zh::stop(), HotKind::Stop,
+  button(x, y, scaled(input.dpi, 80), row1, zh::rescan(), HotKind::Rescan, !s.path.text.empty());
+  button(x, y, scaled(input.dpi, 64), row1, s.scanner.stopRequested() ? zh::stopping() : zh::stop(), HotKind::Stop,
          running);
   button(x, y, scaled(input.dpi, 64), row1, zh::exportCsv(), HotKind::Export, hasTree && !s.exportRunning);
-  int pathX = x;
-  int pathW = std::max(scaled(input.dpi, 80), width - gap - pathX);
-  uint32_t pathBorder = s.focus == Focus::Path ? 0x2e86c1 : 0xc5ced6;
-  fillRect(frame, pathX, y, pathW, row1, 0xffffff);
-  strokeRect(frame, pathX, y, pathW, row1, pathBorder, s.focus == Focus::Path ? 2 : 1);
-  drawText(frame, pathX + scaled(input.dpi, 6), y, pathW - scaled(input.dpi, 12), row1, s.path.text, 0x1f2933, font,
-           false);
-  addHot(pathX, y, pathW, row1, HotKind::EditPath);
+  int pathX = pathBelow ? gap : x + gap;
+  int pathY = pathBelow ? gap + row1 + gap : y + scaled(input.dpi, 25);
+  int pathH = scaled(input.dpi, 32);
+  int pathW = std::max(1, width - gap - pathX);
+  if (!pathBelow) drawText(frame, pathX, y, pathW, scaled(input.dpi, 22),
+                            "\u5f53\u524d\u8def\u5f84", 0x7c8b9c, font - 1, false);
+  uint32_t pathBorder = s.focus == Focus::Path ? 0x6b9dcd : 0xdce3ec;
+  roundRect(frame, pathX, pathY, pathW, pathH, scaled(input.dpi, 5), pathBorder);
+  roundRect(frame, pathX + 1, pathY + 1, pathW - 2, pathH - 2, scaled(input.dpi, 4), 0xffffff);
+  drawText(frame, pathX + scaled(input.dpi, 10), pathY, pathW - scaled(input.dpi, 20), pathH,
+           s.path.text, 0x34465b, font, false);
+  addHot(pathX, pathY, pathW, pathH, HotKind::EditPath);
 
   auto field = [&](int& fx, int fy, int labelW, int boxW, const char* label, const Edit& edit, Focus which,
                    const char* hint, bool invalid, HotKind kind) {
     drawText(frame, fx, fy, labelW, row2, label, 0x34495e, font, false);
     fx += labelW;
-    uint32_t border = invalid ? 0xc0392b : s.focus == which ? 0x2e86c1 : 0xc5ced6;
+    uint32_t border = invalid ? 0xc0392b : s.focus == which ? 0x6b9dcd : 0xdce3ec;
     fillRect(frame, fx, fy, boxW, row2, 0xffffff);
     strokeRect(frame, fx, fy, boxW, row2, border, s.focus == which || invalid ? 2 : 1);
     const std::string& shownText = edit.text.empty() && s.focus != which ? std::string(hint) : edit.text;
@@ -642,11 +722,13 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   };
 
   x = gap;
-  y = gap + row1 + gap;
-  int boxW = std::max(scaled(input.dpi, 120), (width - gap * 8) / 5);
-  field(x, y, scaled(input.dpi, 42), boxW, zh::include(), s.inc, Focus::Inc, zh::hintInclude(), false, HotKind::EditInc);
-  field(x, y, scaled(input.dpi, 42), boxW, zh::exclude(), s.exc, Focus::Exc, zh::hintExclude(), false, HotKind::EditExc);
-  field(x, y, scaled(input.dpi, 42), scaled(input.dpi, 90), zh::minSize(), s.min, Focus::Min, zh::hintMin(),
+  y = gap + row1 + gap + pathRow;
+  int filterLabelW = scaled(input.dpi, 36);
+  int minBoxW = std::min(scaled(input.dpi, 90), std::max(40, width / 7));
+  int boxW = std::max(20, (width - gap * 5 - filterLabelW * 3 - minBoxW) / 2);
+  field(x, y, filterLabelW, boxW, zh::include(), s.inc, Focus::Inc, zh::hintInclude(), false, HotKind::EditInc);
+  field(x, y, filterLabelW, boxW, zh::exclude(), s.exc, Focus::Exc, zh::hintExclude(), false, HotKind::EditExc);
+  field(x, y, filterLabelW, minBoxW, zh::minSize(), s.min, Focus::Min, zh::hintMin(),
         s.minInvalid, HotKind::EditMin);
 
   int mapX = gap;
@@ -655,25 +737,42 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   int mapH = std::max(1, height - statusH - top - gap);
   fillRect(frame, mapX, mapY, mapW, mapH, 0xdfe6ee);
   if (hasTree) {
-    RectF area{static_cast<double>(mapX), static_cast<double>(mapY), static_cast<double>(mapW),
-               static_cast<double>(mapH)};
+    // The view root is not a child tile. Reserve its title independently so
+    // entering a file-only directory cannot remove the outer container header.
+    const int rootTitleH = std::min(titlePx, mapH);
+    const uint32_t rootBase = categoryColor(CatDir);
+    fillRect(frame, mapX, mapY, mapW, rootTitleH, shadeColor(rootBase, 12));
+    fillRect(frame, mapX, mapY + rootTitleH - 1, mapW, 1, shadeColor(rootBase, -30));
+    const uint64_t rootSize = s.view < s.visible.size() ? s.visible[s.view] : s.shown->nodes[s.view].size;
+    std::string rootLabel = std::string(nodeName(*s.shown, s.view)) + "  " + formatSize(rootSize);
+    drawText(frame, mapX + 4, mapY, mapW - 8, rootTitleH - 1, rootLabel,
+             0x1b2631, std::max(9, font - 2), false);
+    addHot(mapX, mapY, mapW, rootTitleH, HotKind::Tile, s.view);
+    RectF area{static_cast<double>(mapX), static_cast<double>(mapY + rootTitleH),
+               static_cast<double>(mapW), static_cast<double>(std::max(0, mapH - rootTitleH))};
     const int labelFont = std::max(9, font - 2);
-    const double minW = std::max(56.0, static_cast<double>(labelFont) * 5.0);
-    const double minH = static_cast<double>(labelFont) * 2.0 + 14.0;
-    std::vector<Tile> laid = layoutTreemap(*s.shown, s.visible, s.view, area, titlePx, minW, minH);
-    s.motion.setTarget(laid, input.timeSec);
+    const double minW = std::max(8, scaled(input.dpi, 8));
+    const double minH = std::max(8, scaled(input.dpi, 8));
+    std::vector<Tile> laid = layoutTreemap(*s.shown, s.visible, s.view, area, titlePx, minW, minH, s.expanded);
+    s.motion.setTarget(laid, input.timeSec, s.view, area, s.snapLayout);
+    s.snapLayout = false;
     s.tiles = s.motion.sample(input.timeSec);
     s.frameAnim = s.motion.running(input.timeSec);
     if (s.shown->changeGen != s.seenChange) {
       s.seenChange = s.shown->changeGen;
-      if (!s.shown->changed.empty()) {
-        s.flashing = s.shown->changed;
-        s.flashUntil = input.timeSec + 0.55;
-      }
+      for (uint32_t id : s.shown->changed) s.changes[id] = input.timeSec;
     }
-    const bool flashing = input.timeSec < s.flashUntil;
-    int dividerPx = std::max(1, scaled(input.dpi, 2));
-    const bool gpu = openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, dividerPx);
+    for (auto it = s.changes.begin(); it != s.changes.end();) {
+      if (input.timeSec - it->second >= 0.4) it = s.changes.erase(it);
+      else ++it;
+    }
+    s.frameAnim = s.frameAnim || !s.changes.empty();
+    int dividerPx = 1;
+    // Navigation layers overlap. Paint fills and borders together so an
+    // outgoing border cannot show through the incoming directory.
+    const bool layered = std::any_of(s.tiles.begin(), s.tiles.end(),
+                                     [](const Tile& tile) { return tile.exiting; });
+    const bool gpu = !layered && openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, dividerPx);
     int hoverTile = -1;
     for (int i = 0; i < static_cast<int>(s.tiles.size()); ++i) {
       const Tile& tile = s.tiles[static_cast<size_t>(i)];
@@ -682,33 +781,39 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
       int tw = iFloor(tile.outer.x + tile.outer.w) - tx;
       int th = iFloor(tile.outer.y + tile.outer.h) - ty;
       if (tw <= 0 || th <= 0) continue;
-      if (input.mouseX >= tx && input.mouseY >= ty && input.mouseX < tx + tw && input.mouseY < ty + th) hoverTile = i;
+      if (!tile.exiting && input.mouseX >= tx && input.mouseY >= ty && input.mouseX < tx + tw && input.mouseY < ty + th) hoverTile = i;
       uint32_t base = categoryColor(tile.flags & kDir ? CatDir : tile.category);
       if (tile.flags & kFree) base = categoryColor(CatFree);
       if (tile.flags & kPending) base = 0xf5cba7;
-      int shift = 0;
-      if (tile.index != kNone && tile.index < s.shown->nodes.size()) {
-        std::string_view name = nodeName(*s.shown, tile.index);
-        uint32_t hash = 2166136261u;
-        for (char c : name) hash = (hash ^ static_cast<unsigned char>(c)) * 16777619u;
-        shift = static_cast<int>(hash % 17) - 8;
-      }
-      uint32_t topColor = shadeColor(base, 16 + shift / 2);
-      uint32_t bottomColor = shadeColor(base, -14 + shift / 2);
-      uint32_t titleColor = shadeColor(base, -28);
-      uint32_t dividerColor = shadeColor(base, -70);
+      uint32_t topColor = shadeColor(base, 5);
+      uint32_t bottomColor = shadeColor(base, -5);
+      uint32_t titleColor = shadeColor(base, 12);
+      uint32_t dividerColor = shadeColor(base, -30);
       if (!gpu) {
         if (th < 8) fillRect(frame, tx, ty, tw, th, base);
         else fillGradient(frame, tx, ty, tw, th, topColor, bottomColor);
       }
-      strokeRect(frame, tx, ty, tw, th, 0xffffff, 1);
-      if (flashing && tile.index != kNone &&
-          std::find(s.flashing.begin(), s.flashing.end(), tile.index) != s.flashing.end()) {
-        strokeRect(frame, tx + 1, ty + 1, std::max(0, tw - 2), std::max(0, th - 2), 0xf7dc6f, 2);
-      }
+      strokeRect(frame, tx, ty, tw, th, shadeColor(base, -30), 1);
+      uint32_t labelColor = mixColor(base, 0x1b2631,
+                                    static_cast<int>(tile.labelOpacity * 255), 255);
       std::string name = tileLabel(*s.shown, tile);
       std::string sizeText = formatSize(tile.size);
-      if (tile.title.h >= font) {
+      bool labelVisible = tile.labelOpacity > 0.05;
+      if (tile.exiting && labelVisible) {
+        // Text is composited after the rectangles by each native host. Do not
+        // leave an old label floating above a tile that has covered it.
+        double cx = tile.outer.x + tile.outer.w * 0.5;
+        double cy = tile.container ? tile.title.y + tile.title.h * 0.5
+                                   : tile.outer.y + tile.outer.h * 0.5;
+        for (size_t j = static_cast<size_t>(i) + 1; j < s.tiles.size(); ++j) {
+          const RectF& cover = s.tiles[j].outer;
+          if (cx >= cover.x && cy >= cover.y && cx < cover.x + cover.w && cy < cover.y + cover.h) {
+            labelVisible = false;
+            break;
+          }
+        }
+      }
+      if (labelVisible && tile.title.h >= font) {
         int hy = iFloor(tile.title.y);
         int hh = iFloor(tile.title.y + tile.title.h) - hy;
         int dh = std::min(dividerPx, std::max(1, hh / 5));
@@ -720,32 +825,66 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
         if (textH >= font && tw >= font * 3) {
           std::string header = name;
           if (tw >= font * 8) header += "  " + sizeText;
-          drawText(frame, tx + 4, hy, tw - 8, textH, header, 0x1b2631, font, true);
+          drawText(frame, tx + 4, hy, tw - 8, textH, header, labelColor, labelFont, false);
         }
-      } else if (th >= labelFont * 2 + 8 && tw >= labelFont * 4) {
+      } else if (labelVisible && !tile.container && th >= labelFont * 2 + 8 && tw >= labelFont * 4) {
         int line = labelFont + 1;
         int block = line * 2;
         int y0 = ty + std::max(0, (th - block) / 2);
-        drawText(frame, tx + 2, y0, tw - 4, line, name, 0x1b2631, labelFont, true);
-        drawText(frame, tx + 2, y0 + line, tw - 4, line, sizeText, 0x1b2631, labelFont, true);
+        drawText(frame, tx + 2, y0, tw - 4, line, name, labelColor, labelFont, true);
+        drawText(frame, tx + 2, y0 + line, tw - 4, line, sizeText, labelColor, labelFont, true);
       }
-      addHot(tx, ty, tw, th, HotKind::Tile, tile.mergeCount ? kNone : tile.index);
+      if (!tile.exiting) addHot(tx, ty, tw, th, HotKind::Tile, tile.mergeCount ? kNone : tile.index);
     }
-    auto paintBorder = [&](int index, uint32_t color) {
-      if (index < 0 || index >= static_cast<int>(s.tiles.size())) return;
-      const Tile& tile = s.tiles[static_cast<size_t>(index)];
-      int tx = iFloor(tile.outer.x);
-      int ty = iFloor(tile.outer.y);
-      int tw = iFloor(tile.outer.x + tile.outer.w) - tx;
-      int th = iFloor(tile.outer.y + tile.outer.h) - ty;
-      strokeRect(frame, tx, ty, tw, th, color, 2);
+    // Brighten the finished pixels so CPU/GPU fills and nested borders keep
+    // the same appearance. Native text is drawn afterwards and stays crisp.
+    auto brighten = [&](RectF rect, int amount) {
+      int x0 = std::max(mapX, iFloor(rect.x));
+      int y0 = std::max(mapY, iFloor(rect.y));
+      int x1 = std::min(mapX + mapW, iFloor(rect.x + rect.w));
+      int y1 = std::min(mapY + mapH, iFloor(rect.y + rect.h));
+      for (int yy = y0; yy < y1; ++yy) {
+        for (int xx = x0; xx < x1; ++xx) {
+          auto& pixel = frame.bgra[static_cast<size_t>(yy) * frame.width + xx];
+          pixel = packRgb(shadeColor(pixel, amount));
+        }
+      }
     };
-    int selectedTile = -1;
-    for (int i = 0; i < static_cast<int>(s.tiles.size()); ++i) {
-      if (s.tiles[static_cast<size_t>(i)].index == s.selected && s.selected != kNone) selectedTile = i;
+    std::vector<int> brightness(s.tiles.size(), 0);
+    for (const auto& change : s.changes) {
+      uint32_t id = change.first;
+      int match = -1;
+      while (id != kNone && id < s.shown->nodes.size()) {
+        for (size_t i = 0; i < s.tiles.size(); ++i) {
+          if (!s.tiles[i].exiting && s.tiles[i].index == id) { match = static_cast<int>(i); break; }
+        }
+        if (match >= 0 || id == s.view) break;
+        // A hidden small file may live in an aggregate block.
+        for (size_t i = 0; i < s.tiles.size(); ++i) {
+          if (!s.tiles[i].exiting && s.tiles[i].mergeCount &&
+              s.tiles[i].parent == s.shown->nodes[id].parent) { match = static_cast<int>(i); break; }
+        }
+        if (match >= 0) break;
+        id = s.shown->nodes[id].parent;
+      }
+      double age = input.timeSec - change.second;
+      int amount = static_cast<int>(age < 0.12 ? 26 - 18 * age / 0.12 : 8 * (0.4 - age) / 0.28);
+      if (match >= 0) brightness[match] = std::max(brightness[match], amount);
+      else if (id == s.view) brighten({static_cast<double>(mapX), static_cast<double>(mapY),
+                                      static_cast<double>(mapW), static_cast<double>(rootTitleH)}, amount);
     }
-    paintBorder(hoverTile, 0x1b4f72);
-    paintBorder(selectedTile, 0xe67e22);
+    uint32_t hovered = hoverTile >= 0 ? s.tiles[hoverTile].index : kNone;
+    if (s.hovered != hovered) { s.hovered = hovered; s.hoverSince = input.timeSec; }
+    if (hoverTile >= 0) {
+      double age = input.timeSec - s.hoverSince;
+      brightness[hoverTile] = std::max(brightness[hoverTile],
+                                     static_cast<int>(age < 0.12 ? 22 - 14 * age / 0.12 : 8));
+      s.frameAnim = s.frameAnim || age < 0.12;
+    }
+    for (size_t i = 0; i < s.tiles.size(); ++i) {
+      if (!s.tiles[i].exiting && s.tiles[i].index == s.selected) brightness[i] = std::max(brightness[i], 5);
+      if (brightness[i] > 0) brighten(s.tiles[i].outer, brightness[i]);
+    }
     if (s.tiles.empty()) {
       std::string message = s.filter.includeGlobs.empty() && s.filter.excludeGlobs.empty() && s.filter.minSize == 0
                                 ? zh::emptyFolder()
@@ -818,7 +957,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   if (s.minInvalid) extra = zh::invalidMin();
   std::string detail;
   uint32_t detailIndex = s.selected;
-  if (detailIndex == kNone) {
+  {
     int hover = hitHot(next, input.mouseX, input.mouseY);
     if (hover >= 0 && next[static_cast<size_t>(hover)].kind == HotKind::Tile) {
       detailIndex = next[static_cast<size_t>(hover)].index;

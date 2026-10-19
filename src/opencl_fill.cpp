@@ -293,12 +293,8 @@ bool openclFillTiles(Frame& frame, const std::vector<Tile>& tiles, int originX, 
       continue;
     }
     uint32_t base = categoryColor(tile.flags & kDir ? CatDir : tile.category);
+    if (tile.flags & kFree) base = categoryColor(CatFree);
     if (tile.flags & kPending) base = 0xf5cba7;
-    int shift = 0;
-    uint32_t hash = 2166136261u;
-    hash ^= tile.index == kNone ? tile.mergeCount : tile.index;
-    hash *= 16777619u;
-    shift = static_cast<int>(hash % 17) - 8;
     int titleH = static_cast<int>(std::floor(tile.title.y + tile.title.h) - std::floor(tile.title.y));
     if (titleH < 0) titleH = 0;
     if (titleH > h) titleH = h;
@@ -309,10 +305,10 @@ bool openclFillTiles(Frame& frame, const std::vector<Tile>& tiles, int originX, 
     item.h = h;
     item.titleH = titleH;
     item.divH = titleH > 3 ? dividerPx : 0;
-    item.top = shadeColor(base, 16 + shift / 2);
-    item.bot = shadeColor(base, -14 + shift / 2);
-    item.title = shadeColor(base, -28);
-    item.divider = shadeColor(base, -70);
+    item.top = shadeColor(base, 5);
+    item.bot = shadeColor(base, -5);
+    item.title = shadeColor(base, 12);
+    item.divider = shadeColor(base, -30);
     int id = static_cast<int>(packed.size());
     packed.push_back(item);
     int bx0 = std::max(0, (x0 - originX) / binSize);

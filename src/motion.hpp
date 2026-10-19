@@ -6,7 +6,7 @@
 
 class TileMotion {
  public:
-  void setTarget(const std::vector<Tile>& target, double now);
+  void setTarget(const std::vector<Tile>& target, double now, uint32_t view = kNone, RectF viewport = {}, bool immediate = false);
   std::vector<Tile> sample(double now) const;
   bool running(double now) const;
 
@@ -21,4 +21,11 @@ class TileMotion {
   double start_ = 0;
   double duration_ = 0.26;
   bool active_ = false;
+  uint32_t view_ = kNone;
+  RectF viewport_;
+  RectF cameraFrom_;
+  RectF cameraTo_;
+  bool navigation_ = false;
+  bool zoomOut_ = false;
+  std::vector<Tile> outgoing_;
 };
