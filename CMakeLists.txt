@@ -84,8 +84,11 @@ elseif(APPLE)
     src/platform/apple/disk_space.mm
     src/platform/apple/scan_policy.cpp
     src/platform/apple/PrivacyInfo.xcprivacy
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/SpaceViewer.icns"
     ${SPACEVIEWER_FONTS}
     ${SPACEVIEWER_FONT_LICENSES})
+  set_source_files_properties(assets/icons/SpaceViewer.icns
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
   set_source_files_properties(${SPACEVIEWER_FONTS}
     PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Fonts)
   set_source_files_properties(${SPACEVIEWER_FONT_LICENSES}
@@ -98,6 +101,7 @@ elseif(APPLE)
     OUTPUT_NAME SpaceViewer
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_BUNDLE_NAME SpaceViewer
+    MACOSX_BUNDLE_ICON_FILE SpaceViewer.icns
     MACOSX_BUNDLE_GUI_IDENTIFIER com.spaceviewer.app
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"

@@ -79,6 +79,7 @@
   "emptyFolder": "此資料夾是空的",
   "cannotOpen": "無法開啟此路徑",
   "openLocation": "在資料夾中顯示",
+  "showInFinder": "在 Finder 中顯示",
   "copyPath": "複製路徑",
   "enterFolder": "開啟此資料夾",
   "noMatch": "沒有符合的項目",

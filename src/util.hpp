@@ -21,6 +21,7 @@ uint32_t shadeColor(uint32_t rgb, int delta);
 uint32_t mixColor(uint32_t a, uint32_t b, int tNum, int tDen);
 
 std::string_view nodeName(const TreeSnapshot& tree, uint32_t index);
+bool nodeHasMultipleChildren(const TreeSnapshot& tree, uint32_t index);
 uint32_t addNode(TreeSnapshot& tree, uint32_t parent, const std::string& name, uint8_t flags,
                  uint8_t category, uint64_t size);
 void accountBytes(TreeSnapshot& tree, uint32_t dir, uint64_t bytes);

@@ -27,6 +27,19 @@ enum Category : uint8_t {
 };
 
 struct Node {
+#if defined(__APPLE__)
+  // macOS scans can contain millions of entries. Keep the per-entry record
+  // compact because both the working tree and its published snapshot coexist.
+  uint64_t size = 0;
+  uint32_t nameOff = 0;
+  uint32_t parent = kNone;
+  uint32_t firstChild = kNone;
+  uint32_t lastChild = kNone;
+  uint32_t nextSibling = kNone;
+  uint16_t nameLen = 0;
+  uint8_t flags = 0;
+  uint8_t category = CatOther;
+#else
   uint32_t nameOff = 0;
   uint32_t nameLen = 0;
   uint32_t parent = kNone;
@@ -37,7 +50,11 @@ struct Node {
   uint64_t size = 0;
   uint8_t flags = 0;
   uint8_t category = CatOther;
+#endif
 };
+#if defined(__APPLE__)
+static_assert(sizeof(Node) == 32, "macOS scan nodes should stay compact");
+#endif
 
 struct TreeSnapshot {
   std::vector<Node> nodes;

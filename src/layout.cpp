@@ -72,7 +72,7 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
         tile.hidden = std::floor(outer.w) < minW || std::floor(outer.h) < minH;
         const bool explicitExpand = std::find(expanded.begin(), expanded.end(), item.index) != expanded.end();
         const bool nest = !tile.hidden && (depth < detail || explicitExpand) && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
-                          (tree.nodes[item.index].childCount > 1 || explicitExpand) &&
+                          (nodeHasMultipleChildren(tree, item.index) || explicitExpand) &&
                           outer.w >= (explicitExpand ? minW * 2 : std::max(36.0, minW * 1.5)) &&
                           outer.h >= titlePx + (explicitExpand ? minH + 4 : std::max(20.0, minH * 2));
         tile.container = nest;
@@ -123,7 +123,7 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
         tile.hidden = std::floor(outer.w) < minW || std::floor(outer.h) < minH;
         const bool explicitExpand = std::find(expanded.begin(), expanded.end(), item.index) != expanded.end();
         const bool nest = !tile.hidden && (depth < detail || explicitExpand) && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
-                          (tree.nodes[item.index].childCount > 1 || explicitExpand) &&
+                          (nodeHasMultipleChildren(tree, item.index) || explicitExpand) &&
                           outer.w >= (explicitExpand ? minW * 2 : std::max(36.0, minW * 1.5)) &&
                           outer.h >= titlePx + (explicitExpand ? minH + 4 : std::max(20.0, minH * 2));
         tile.container = nest;

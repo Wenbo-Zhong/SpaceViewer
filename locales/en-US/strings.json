@@ -79,6 +79,7 @@
   "emptyFolder": "This folder is empty",
   "cannotOpen": "Unable to open this path",
   "openLocation": "Show in folder",
+  "showInFinder": "Show in Finder",
   "copyPath": "Copy path",
   "enterFolder": "Open this folder",
   "noMatch": "No matching items",

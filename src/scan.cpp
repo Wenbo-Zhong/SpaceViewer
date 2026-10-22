@@ -174,7 +174,12 @@ struct Scanner::Impl {
   void publish(bool force) {
     std::lock_guard<std::mutex> publishLock(publishMu);
     auto now = std::chrono::steady_clock::now();
-    if (!force && lastPub.time_since_epoch().count() != 0 && now - lastPub < std::chrono::milliseconds(250)) {
+#if defined(__APPLE__)
+    constexpr auto publishInterval = std::chrono::milliseconds(1000);
+#else
+    constexpr auto publishInterval = std::chrono::milliseconds(250);
+#endif
+    if (!force && lastPub.time_since_epoch().count() != 0 && now - lastPub < publishInterval) {
       return;
     }
     auto snap = std::make_shared<TreeSnapshot>();
@@ -601,7 +606,9 @@ void unlinkNode(TreeSnapshot& tree, uint32_t id) {
   if (prev == kNone) tree.nodes[parent].firstChild = next;
   else tree.nodes[prev].nextSibling = next;
   if (tree.nodes[parent].lastChild == id) tree.nodes[parent].lastChild = prev;
+#if !defined(__APPLE__)
   if (tree.nodes[parent].childCount > 0) tree.nodes[parent].childCount--;
+#endif
   tree.nodes[id].parent = kNone;
   tree.nodes[id].nextSibling = kNone;
 }
@@ -1214,7 +1221,10 @@ void Scanner::refreshSubtree(uint32_t index) {
     impl->live.files -= std::min(files,impl->live.files);
     impl->live.dirs -= std::min(dirs > 0 ? dirs-1 : 0,impl->live.dirs);
     Node& node = impl->live.nodes[index];
-    node.firstChild = node.lastChild = kNone; node.childCount = 0;
+    node.firstChild = node.lastChild = kNone;
+#if !defined(__APPLE__)
+    node.childCount = 0;
+#endif
     impl->live.running = true; impl->live.complete = false; impl->live.aborted = false;
     impl->live.volumeScan = false;
   }

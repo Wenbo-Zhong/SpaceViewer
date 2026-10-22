@@ -273,11 +273,21 @@ std::string_view nodeName(const TreeSnapshot& tree, uint32_t index) {
   return std::string_view(tree.nameBlob.data() + n.nameOff, n.nameLen);
 }
 
+bool nodeHasMultipleChildren(const TreeSnapshot& tree, uint32_t index) {
+  if (index >= tree.nodes.size()) return false;
+#if defined(__APPLE__)
+  uint32_t first = tree.nodes[index].firstChild;
+  return first != kNone && first < tree.nodes.size() && tree.nodes[first].nextSibling != kNone;
+#else
+  return tree.nodes[index].childCount > 1;
+#endif
+}
+
 uint32_t addNode(TreeSnapshot& tree, uint32_t parent, const std::string& name, uint8_t flags,
                  uint8_t category, uint64_t size) {
   Node node;
   node.nameOff = static_cast<uint32_t>(tree.nameBlob.size());
-  node.nameLen = static_cast<uint32_t>(name.size());
+  node.nameLen = static_cast<decltype(node.nameLen)>(name.size());
   tree.nameBlob.append(name);
   node.parent = parent;
   node.flags = flags;
@@ -290,7 +300,9 @@ uint32_t addNode(TreeSnapshot& tree, uint32_t parent, const std::string& name, u
     if (p.firstChild == kNone) p.firstChild = id;
     else tree.nodes[p.lastChild].nextSibling = id;
     p.lastChild = id;
+#if !defined(__APPLE__)
     p.childCount++;
+#endif
   }
   return id;
 }

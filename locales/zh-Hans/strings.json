@@ -79,6 +79,7 @@
   "emptyFolder": "此文件夹为空",
   "cannotOpen": "无法打开该路径",
   "openLocation": "打开所在位置",
+  "showInFinder": "在访达中显示",
   "copyPath": "复制路径",
   "enterFolder": "进入此文件夹",
   "noMatch": "没有匹配的项目",

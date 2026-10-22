@@ -109,6 +109,7 @@ void clearEdges(Input& input) {
 - (void)scanPath:(NSString*)path;
 - (void)chooseStartupLocation;
 - (void)stopScanning;
+- (void)contextMenuAction:(NSMenuItem*)item;
 @end
 
 static SVView* gView = nil;
@@ -277,6 +278,12 @@ static SVView* gView = nil;
   [self displayIfNeeded];
 }
 
+- (void)contextMenuAction:(NSMenuItem*)item {
+  if (!app_) return;
+  app_->applyMenu(static_cast<MenuCommand>(item.tag), host_);
+  [self setNeedsDisplay:YES];
+}
+
 - (void)mouseMoved:(NSEvent*)event {
   [self updateMouse:event];
   [self setNeedsDisplay:YES];
@@ -371,6 +378,8 @@ static SVView* gView = nil;
   input_.timeSec = [NSDate timeIntervalSinceReferenceDate];
   Frame frame;
   app_->update(input_, host_, frame);
+  MenuRequest menuRequest;
+  const bool showContextMenu = app_->takeMenu(menuRequest);
   clearEdges(input_);
 
   if (frame.width > 0 && frame.height > 0 && !frame.bgra.empty()) {
@@ -429,6 +438,33 @@ static SVView* gView = nil;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
       SVView* view = weakSelf;
       if (view) [view setNeedsDisplay:YES];
+    });
+  }
+  if (showContextMenu) {
+    __weak SVView* weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      SVView* view = weakSelf;
+      if (!view) return;
+      NSMenu* menu = [NSMenu new];
+      auto addItem = [&](const char* title, MenuCommand command, bool enabled) {
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithUTF8String:title]
+                                                      action:@selector(contextMenuAction:)
+                                               keyEquivalent:@""];
+        item.target = view;
+        item.tag = static_cast<NSInteger>(command);
+        item.enabled = enabled;
+        [menu addItem:item];
+      };
+      addItem(zh::open(), MenuCommand::Open, menuRequest.canOpen);
+      addItem(zh::showInFinder(), MenuCommand::Reveal, menuRequest.canReveal);
+      addItem(zh::copyPath(), MenuCommand::CopyPath, menuRequest.canCopy);
+      if (menuRequest.canZoom) {
+        [menu addItem:[NSMenuItem separatorItem]];
+        addItem(zh::enterFolder(), MenuCommand::Zoom, true);
+      }
+      NSPoint location = NSMakePoint(menuRequest.x / scale,
+                                     NSHeight(view.bounds) - menuRequest.y / scale);
+      [menu popUpMenuPositioningItem:nil atLocation:location inView:view];
     });
   }
 }
