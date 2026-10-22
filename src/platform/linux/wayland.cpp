@@ -5,6 +5,7 @@
 #include "app.hpp"
 #include "host.hpp"
 #include "menu.hpp"
+#include "dpi.hpp"
 #include "text.hpp"
 
 #include "xdg-decoration-client-protocol.h"
@@ -37,6 +38,16 @@
 namespace {
 
 struct Wayland;
+
+struct Output {
+  Wayland* app = nullptr;
+  wl_output* handle = nullptr;
+  uint32_t name = 0;
+  int scale = 1;
+  int width = 0, height = 0;
+  int widthMm = 0, heightMm = 0;
+  bool entered = false;
+};
 
 void clearEdges(Input& input) {
   input.leftPressed = false;
@@ -75,7 +86,7 @@ struct Wayland {
   wl_seat* seat = nullptr;
   wl_pointer* pointer = nullptr;
   wl_keyboard* keyboard = nullptr;
-  wl_output* output = nullptr;
+  std::vector<Output*> outputs;
   wl_data_device_manager* dataManager = nullptr;
   wl_data_device* dataDevice = nullptr;
   wl_data_offer* offer = nullptr;
@@ -96,7 +107,6 @@ struct Wayland {
   std::string cjkFontPath;
   int facePx = 0;
   int cjkFacePx = 0;
-  int scale = 1;
   int logicalW = 1100;
   int logicalH = 740;
   int wakePipe[2] = {-1, -1};
@@ -113,11 +123,25 @@ struct Wayland {
 };
 
 int outputScale(Wayland& app) {
+  int scale = 1;
+  bool entered = std::any_of(app.outputs.begin(), app.outputs.end(), [](Output* o) { return o->entered; });
+  for (Output* output : app.outputs)
+    if (!entered || output->entered) scale = std::max(scale, output->scale);
   if (const char* env = std::getenv("GDK_SCALE")) {
     int factor = std::atoi(env);
-    if (factor >= 1 && factor <= 4 && app.scale < factor) return factor;
+    if (factor >= 1 && factor <= 4) scale = std::max(scale, factor);
   }
-  return app.scale < 1 ? 1 : app.scale;
+  return scale;
+}
+
+float outputDpi(Wayland& app) {
+  double scale = outputScale(app);
+  bool entered = std::any_of(app.outputs.begin(), app.outputs.end(), [](Output* o) { return o->entered; });
+  for (Output* output : app.outputs) {
+    if (!entered || output->entered)
+      scale = std::max(scale, linuxDensityScale(output->width, output->height, output->widthMm, output->heightMm));
+  }
+  return static_cast<float>(96 * scale);
 }
 
 void seatCapabilities(void* data, wl_seat* seat, uint32_t caps);
@@ -140,9 +164,19 @@ void keyboardKey(void* data, wl_keyboard*, uint32_t serial, uint32_t, uint32_t k
 void keyboardModifiers(void* data, wl_keyboard*, uint32_t, uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group);
 void keyboardRepeat(void*, wl_keyboard*, int32_t, int32_t) {}
 
-void outputGeometry(void*, wl_output*, int32_t, int32_t, int32_t, int32_t, int32_t, const char*, const char*, int32_t) {}
-void outputMode(void*, wl_output*, uint32_t, int32_t, int32_t, int32_t) {}
-void outputDone(void*, wl_output*) {}
+void outputGeometry(void* data, wl_output*, int32_t, int32_t, int32_t widthMm, int32_t heightMm, int32_t,
+                    const char*, const char*, int32_t) {
+  auto* output = static_cast<Output*>(data);
+  output->widthMm = widthMm;
+  output->heightMm = heightMm;
+}
+void outputMode(void* data, wl_output*, uint32_t flags, int32_t width, int32_t height, int32_t) {
+  if (!(flags & WL_OUTPUT_MODE_CURRENT)) return;
+  auto* output = static_cast<Output*>(data);
+  output->width = width;
+  output->height = height;
+}
+void outputDone(void* data, wl_output*) { static_cast<Output*>(data)->app->dirty = true; }
 void outputScale(void* data, wl_output*, int32_t factor);
 
 void dataOfferOffer(void* data, wl_data_offer* offer, const char* mime);
@@ -167,7 +201,28 @@ void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height,
 void toplevelClose(void* data, xdg_toplevel*);
 
 void registryGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface, uint32_t version);
-void registryRemove(void*, wl_registry*, uint32_t) {}
+void registryRemove(void* data, wl_registry*, uint32_t name) {
+  auto* app = static_cast<Wayland*>(data);
+  for (auto it = app->outputs.begin(); it != app->outputs.end(); ++it) {
+    if ((*it)->name != name) continue;
+    wl_output_destroy((*it)->handle);
+    delete *it;
+    app->outputs.erase(it);
+    app->dirty = true;
+    break;
+  }
+}
+
+void surfaceEnter(void* data, wl_surface*, wl_output* handle) {
+  auto* app = static_cast<Wayland*>(data);
+  for (Output* output : app->outputs) if (output->handle == handle) output->entered = true;
+  app->dirty = true;
+}
+void surfaceLeave(void* data, wl_surface*, wl_output* handle) {
+  auto* app = static_cast<Wayland*>(data);
+  for (Output* output : app->outputs) if (output->handle == handle) output->entered = false;
+  app->dirty = true;
+}
 
 const wl_registry_listener kRegistry = {registryGlobal, registryRemove};
 const wl_seat_listener kSeat = {seatCapabilities, seatName};
@@ -176,6 +231,7 @@ const wl_pointer_listener kPointer = {pointerEnter, pointerLeave, pointerMotion,
 const wl_keyboard_listener kKeyboard = {keyboardKeymap, keyboardEnter, keyboardLeave, keyboardKey, keyboardModifiers,
                                         keyboardRepeat};
 const wl_output_listener kOutput = {outputGeometry, outputMode, outputDone, outputScale};
+const wl_surface_listener kSurface = {surfaceEnter, surfaceLeave};
 const wl_data_offer_listener kOffer = {dataOfferOffer, dataOfferSourceActions, dataOfferAction};
 const wl_data_device_listener kDataDevice = {dataDeviceOffer, dataDeviceEnter, dataDeviceLeave, dataDeviceMotion,
                                             dataDeviceDrop, dataDeviceSelection};
@@ -195,9 +251,13 @@ void registryGlobal(void* data, wl_registry* registry, uint32_t name, const char
   } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
     app->seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5u)));
     wl_seat_add_listener(app->seat, &kSeat, app);
-  } else if (std::strcmp(interface, wl_output_interface.name) == 0 && !app->output) {
-    app->output = static_cast<wl_output*>(wl_registry_bind(registry, name, &wl_output_interface, std::min(version, 2u)));
-    wl_output_add_listener(app->output, &kOutput, app);
+  } else if (std::strcmp(interface, wl_output_interface.name) == 0) {
+    auto* output = new Output;
+    output->app = app;
+    output->name = name;
+    output->handle = static_cast<wl_output*>(wl_registry_bind(registry, name, &wl_output_interface, std::min(version, 2u)));
+    app->outputs.push_back(output);
+    wl_output_add_listener(output->handle, &kOutput, output);
   } else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0) {
     app->wm = static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, std::min(version, 3u)));
     xdg_wm_base_add_listener(app->wm, &kWm, app);
@@ -211,10 +271,10 @@ void registryGlobal(void* data, wl_registry* registry, uint32_t name, const char
 }
 
 void outputScale(void* data, wl_output*, int32_t factor) {
-  auto* app = static_cast<Wayland*>(data);
+  auto* output = static_cast<Output*>(data);
   if (factor >= 1 && factor <= 4) {
-    app->scale = factor;
-    app->dirty = true;
+    output->scale = factor;
+    output->app->dirty = true;
   }
 }
 
@@ -252,8 +312,8 @@ void pointerButton(void* data, wl_pointer*, uint32_t serial, uint32_t, uint32_t 
   app->serial = serial;
   if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
   if (button == 0x110) {
-    if (app->input.mouseY < linuxTitlebarHeight(app->input.dpi) &&
-        linuxTitlebarDragHit(app->input.mouseX, app->input.mouseY, app->input.windowW, app->input.dpi)) {
+    if (app->input.mouseY < linuxTitlebarHeight(app->input.controlDpi()) &&
+        linuxTitlebarDragHit(app->input.mouseX, app->input.mouseY, app->input.windowW, app->input.controlDpi())) {
       if (app->toplevel && app->seat) xdg_toplevel_move(app->toplevel, app->seat, serial);
       app->dirty = true;
       return;
@@ -474,25 +534,43 @@ void blendGlyph(uint32_t* pixels, int frameW, int frameH, FT_Bitmap& bitmap, int
 
 void drawTexts(Wayland& app, Frame& frame) {
   for (const Frame::Text& text : frame.texts) {
-    int px = std::max(8, text.fontPx);
-    if (!loadFace(app, px)) return;
+    int px = std::max(6, text.fontPx);
+    if (!loadFace(app, px) || !loadFace(app, px, true)) return;
     std::vector<uint32_t> points;
     size_t index = 0;
     while (index < text.utf8.size()) points.push_back(decodeUtf8(text.utf8, index));
-    int width = 0;
-    for (uint32_t cp : points) {
-      FT_Face face = isChinese(cp) ? app.cjkFace : app.face;
-      if (!face || FT_Load_Char(face, cp, FT_LOAD_DEFAULT) != 0) continue;
-      width += static_cast<int>(face->glyph->advance.x >> 6);
-    }
     int ascent = static_cast<int>(app.face->size->metrics.ascender >> 6);
     int descent = static_cast<int>(-(app.face->size->metrics.descender >> 6));
     if (app.cjkFace) {
       ascent = std::max(ascent, static_cast<int>(app.cjkFace->size->metrics.ascender >> 6));
       descent = std::max(descent, static_cast<int>(-(app.cjkFace->size->metrics.descender >> 6)));
     }
+    while (ascent + descent > text.h && px > 6) {
+      --px;
+      if (!loadFace(app, px) || !loadFace(app, px, true)) return;
+      ascent = static_cast<int>(app.face->size->metrics.ascender >> 6);
+      descent = static_cast<int>(-(app.face->size->metrics.descender >> 6));
+      if (app.cjkFace) {
+        ascent = std::max(ascent, static_cast<int>(app.cjkFace->size->metrics.ascender >> 6));
+        descent = std::max(descent, static_cast<int>(-(app.cjkFace->size->metrics.descender >> 6)));
+      }
+    }
+    int width = 0, inkLeft = 0, inkRight = 0;
+    bool hasInk = false;
+    for (uint32_t cp : points) {
+      FT_Face face = isChinese(cp) ? app.cjkFace : app.face;
+      if (!face || FT_Load_Char(face, cp, FT_LOAD_RENDER) != 0) continue;
+      FT_GlyphSlot glyph = face->glyph;
+      int left = width + glyph->bitmap_left;
+      int right = left + static_cast<int>(glyph->bitmap.width);
+      if (glyph->bitmap.width > 0) {
+        if (!hasInk) { inkLeft = left; inkRight = right; hasInk = true; }
+        else { inkLeft = std::min(inkLeft, left); inkRight = std::max(inkRight, right); }
+      }
+      width += static_cast<int>(face->glyph->advance.x >> 6);
+    }
     int x = text.x;
-    if (text.center) x += std::max(0, (text.w - width) / 2);
+    if (text.center) x += std::max(0, (text.w - (inkRight - inkLeft)) / 2) - inkLeft;
     int baseline = text.y + std::max(0, (text.h - (ascent + descent)) / 2) + ascent;
     for (uint32_t cp : points) {
       FT_Face face = isChinese(cp) ? app.cjkFace : app.face;
@@ -623,6 +701,10 @@ int spaceviewer_wayland_main(int argc, char** argv) {
     wl_data_device_add_listener(app.dataDevice, &kDataDevice, &app);
   }
   app.surface = wl_compositor_create_surface(app.compositor);
+  wl_surface_add_listener(app.surface, &kSurface, &app);
+  const double initialScale = outputDpi(app) / (96.0 * outputScale(app));
+  app.logicalW = static_cast<int>(1100 * initialScale);
+  app.logicalH = static_cast<int>(740 * initialScale);
   app.xdgSurface = xdg_wm_base_get_xdg_surface(app.wm, app.surface);
   xdg_surface_add_listener(app.xdgSurface, &kXdgSurface, &app);
   app.toplevel = xdg_surface_get_toplevel(app.xdgSurface);
@@ -659,7 +741,8 @@ int spaceviewer_wayland_main(int argc, char** argv) {
     int scale = outputScale(app);
     app.input.windowW = std::max(1, app.logicalW * scale);
     app.input.windowH = std::max(1, app.logicalH * scale);
-    app.input.dpi = static_cast<float>(96 * scale);
+    app.input.dpi = outputDpi(app);
+    app.input.chromeDpi = static_cast<float>(96 * scale);
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     app.input.timeSec = static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1e9;
@@ -680,9 +763,17 @@ int spaceviewer_wayland_main(int argc, char** argv) {
     if (app.menu.rootScanRequested) {
       app.menu.rootScanRequested = false;
       if (!linuxLaunchRootScan()) std::fprintf(stderr, "SpaceViewer: cannot start pkexec root scan\n");
+      else app.running = false;
+    }
+    if (app.menu.contextCommand != MenuCommand::None) {
+      app.app.applyMenu(app.menu.contextCommand, host);
+      app.menu.contextCommand = MenuCommand::None;
     }
     app.app.update(uiInput, host, frame);
-    linuxMenuPresent(app.menu, frame, windowHeight, uiInput.dpi);
+    MenuRequest context;
+    if (app.app.takeMenu(context))
+      linuxMenuShowContext(app.menu, context, uiInput.windowW, windowHeight, uiInput.controlDpi(), true);
+    linuxMenuPresent(app.menu, frame, windowHeight, uiInput.controlDpi());
     present(app, frame);
     clearEdges(app.input);
     app.dirty = false;
@@ -728,6 +819,10 @@ int spaceviewer_wayland_main(int argc, char** argv) {
   if (app.xkb) xkb_context_unref(app.xkb);
   if (app.wakePipe[0] >= 0) close(app.wakePipe[0]);
   if (app.wakePipe[1] >= 0) close(app.wakePipe[1]);
+  for (Output* output : app.outputs) {
+    wl_output_destroy(output->handle);
+    delete output;
+  }
   wl_display_disconnect(app.display);
   return 0;
 }

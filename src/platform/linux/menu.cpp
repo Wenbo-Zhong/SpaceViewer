@@ -1,4 +1,5 @@
 #include "menu.hpp"
+#include "text.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,19 @@ struct Item {
   HotKind action;
   bool rootScan = false;
 };
+
+struct ContextItem { const char* label; MenuCommand action; };
+
+std::vector<ContextItem> contextItems(const MenuRequest& request) {
+  const char* reveal = zh::language() == zh::Language::English ? "Show in Files" :
+      zh::language() == zh::Language::TraditionalChinese ? "在檔案管理員中顯示" : "在文件中显示";
+  std::vector<ContextItem> items;
+  if (request.canReveal) items.push_back({reveal, MenuCommand::Reveal});
+  if (request.canOpen) items.push_back({zh::open(), MenuCommand::Open});
+  if (request.canCopy) items.push_back({zh::copyPath(), MenuCommand::CopyPath});
+  if (request.canZoom) items.push_back({zh::enterFolder(), MenuCommand::Zoom});
+  return items;
+}
 
 int scale(float dpi, int value) {
   return std::max(1, static_cast<int>(std::lround(value * dpi / 96.0f)));
@@ -89,18 +103,43 @@ void text(Frame& frame, int x, int y, int w, int h, int font, const char* value,
   item.rgb = 0x263746; item.center = center; item.utf8 = value;
   frame.texts.push_back(std::move(item));
 }
+
+void coverTexts(Frame& frame, int x, int y, int w, int h) {
+  // Native text is drawn after all pixel fills. Suppress covered labels so
+  // file names cannot show through the menu background.
+  frame.texts.erase(std::remove_if(frame.texts.begin(), frame.texts.end(), [&](const Frame::Text& item) {
+    return item.x < x + w && item.x + item.w > x && item.y < y + h && item.y + item.h > y;
+  }), frame.texts.end());
+}
 }
 
 void linuxMenuPrepare(LinuxMenuState& menu, Input& input, bool clientTitlebar) {
-  const int title = clientTitlebar ? titleHeight(input.dpi) : 0;
-  const int height = barHeight(input.dpi);
+  const int title = clientTitlebar ? titleHeight(input.controlDpi()) : 0;
+  const int height = barHeight(input.controlDpi());
   const int top = title + height;
+  menu.hoveredContextRow = -1;
+  if (menu.contextOpen) {
+    const auto items = contextItems(menu.context);
+    const int rowH = scale(input.controlDpi(), 30);
+    if (input.mouseX >= menu.contextX && input.mouseX < menu.contextX + menu.contextWidth &&
+        input.mouseY >= menu.contextY && input.mouseY < menu.contextY + rowH * static_cast<int>(items.size()))
+      menu.hoveredContextRow = (input.mouseY - menu.contextY) / rowH;
+    if (input.keyEsc || input.rightPressed) {
+      menu.contextOpen = false;
+      input.keyEsc = false;
+    } else if (input.leftPressed) {
+      if (menu.hoveredContextRow >= 0)
+        menu.contextCommand = items[static_cast<size_t>(menu.hoveredContextRow)].action;
+      menu.contextOpen = false;
+      input.leftPressed = false;
+    }
+  }
   menu.hoveredControl = clientTitlebar
-      ? static_cast<int>(linuxTitlebarControlAt(input.mouseX, input.mouseY, input.windowW, input.dpi)) - 1
+      ? static_cast<int>(linuxTitlebarControlAt(input.mouseX, input.mouseY, input.windowW, input.controlDpi())) - 1
       : -1;
   if (input.leftPressed) {
     if (input.mouseY < title) {
-      switch (linuxTitlebarControlAt(input.mouseX, input.mouseY, input.windowW, input.dpi)) {
+      switch (linuxTitlebarControlAt(input.mouseX, input.mouseY, input.windowW, input.controlDpi())) {
         case LinuxWindowControl::Minimize: menu.minimizeRequested = true; break;
         case LinuxWindowControl::Maximize: menu.maximizeRequested = true; break;
         case LinuxWindowControl::Close: menu.closeRequested = true; break;
@@ -108,10 +147,10 @@ void linuxMenuPrepare(LinuxMenuState& menu, Input& input, bool clientTitlebar) {
       }
       input.leftPressed = false;
     } else if (input.mouseY < top) {
-      menu.active = menuAt(input.mouseX, input.dpi);
+      menu.active = menuAt(input.mouseX, input.controlDpi());
       input.leftPressed = false;
-    } else if (menu.active >= 0 && input.mouseY < top + scale(input.dpi, 30) * 10) {
-      const int row = (input.mouseY - top) / scale(input.dpi, 30);
+    } else if (menu.active >= 0 && input.mouseY < top + scale(input.controlDpi(), 30) * 10) {
+      const int row = (input.mouseY - top) / scale(input.controlDpi(), 30);
       const auto items = itemsFor(menu.active);
       if (row >= 0 && row < static_cast<int>(items.size())) {
         if (items[static_cast<size_t>(row)].rootScan) menu.rootScanRequested = true;
@@ -126,6 +165,20 @@ void linuxMenuPrepare(LinuxMenuState& menu, Input& input, bool clientTitlebar) {
   }
   input.mouseY -= top;
   input.windowH = std::max(1, input.windowH - top);
+}
+
+void linuxMenuShowContext(LinuxMenuState& menu, const MenuRequest& request, int width, int height,
+                          float dpi, bool clientTitlebar) {
+  menu.context = request;
+  const auto items = contextItems(request);
+  menu.contextOpen = !items.empty();
+  menu.active = -1;
+  menu.contextWidth = std::min(width, scale(dpi, 220));
+  const int top = (clientTitlebar ? titleHeight(dpi) : 0) + barHeight(dpi);
+  menu.contextX = std::clamp(request.x, 0, std::max(0, width - menu.contextWidth));
+  menu.contextY = std::clamp(request.y + top, 0,
+      std::max(0, height - scale(dpi, 30) * static_cast<int>(items.size())));
+  menu.hoveredContextRow = -1;
 }
 
 void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, float dpi, bool clientTitlebar) {
@@ -152,12 +205,12 @@ void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, floa
     drawControl(frame, controlsX + controlWidth * 2, 0, controlWidth, title, 2, menu.hoveredControl == 2, dpi);
   }
 
-  fill(frame, 0, title, frame.width, height, 0xf4f6f8);
-  fill(frame, 0, title + height - 1, frame.width, 1, 0xd0d7de);
+  fill(frame, 0, title, frame.width, height, 0xf8fafc);
+  fill(frame, 0, title + height - 1, frame.width, 1, 0xe6e8eb);
   const char* labels[] = {"文件", "视图"};
   const int left = scale(dpi, 8), width = scale(dpi, 64);
   for (int i = 0; i < 2; ++i) {
-    if (menu.active == i) fill(frame, left + i * width, title + 1, width, height - 2, 0xdce8f4);
+    if (menu.active == i) fill(frame, left + i * width, title + 1, width, height - 2, 0xe8edf2);
     text(frame, left + i * width, title, width, height - 1, scale(dpi, 13), labels[i], true);
   }
   if (menu.active >= 0) {
@@ -166,6 +219,7 @@ void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, floa
     const int rowH = scale(dpi, 30), popupW = scale(dpi, 190);
     const int x = left + menu.active * width;
     const int rows = static_cast<int>(items.size());
+    coverTexts(frame, x, top, popupW, rowH * rows);
     fill(frame, x, top, popupW, rowH * rows, 0xffffff);
     fill(frame, x, top, popupW, 1, 0x9caab7);
     fill(frame, x, top + rowH * rows - 1, popupW, 1, 0x9caab7);
@@ -174,6 +228,19 @@ void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, floa
     for (int i = 0; i < rows; ++i)
       text(frame, x + scale(dpi, 12), top + rowH * i, popupW - scale(dpi, 20), rowH,
            scale(dpi, 13), items[static_cast<size_t>(i)].label);
+  }
+  if (menu.contextOpen) {
+    const auto items = contextItems(menu.context);
+    const int x = menu.contextX, y = menu.contextY, w = menu.contextWidth;
+    const int rowH = scale(dpi, 30), h = rowH * static_cast<int>(items.size());
+    coverTexts(frame, x, y, w, h);
+    fill(frame, x, y, w, h, 0x9caab7);
+    fill(frame, x + 1, y + 1, w - 2, h - 2, 0xffffff);
+    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+      if (menu.hoveredContextRow == i) fill(frame, x + 1, y + i * rowH + 1, w - 2, rowH - 2, 0xe8edf2);
+      text(frame, x + scale(dpi, 12), y + rowH * i, w - scale(dpi, 24), rowH,
+           scale(dpi, 13), items[static_cast<size_t>(i)].label);
+    }
   }
 }
 

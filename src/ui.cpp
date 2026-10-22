@@ -168,13 +168,13 @@ std::vector<uint64_t> visibleForLayout(const TreeSnapshot& tree, const std::vect
 RectF directoryContentArea(const Input& input) {
   const int width = std::max(1, input.windowW);
   const int height = std::max(1, input.windowH);
-  const int gap = scaled(input.dpi, 8);
-  const int row1 = scaled(input.dpi, 64);
-  const int row2 = scaled(input.dpi, 30);
+  const int gap = scaled(input.controlDpi(), 8);
+  const int row1 = scaled(input.controlDpi(), 64);
+  const int row2 = scaled(input.controlDpi(), 30);
   const int statusH = scaled(input.dpi, 26);
-  const int pathRow = scaled(input.dpi, 32) + gap;
+  const int pathRow = scaled(input.controlDpi(), 32) + gap;
   const int top = gap + row1 + gap + pathRow + row2 + gap;
-  const int mapY = top + scaled(input.dpi, 4);
+  const int mapY = top + scaled(input.controlDpi(), 4);
   const int mapH = std::max(0, height - statusH - mapY - gap);
   const int title = std::min(std::max(12, scaled(input.dpi, 14)), mapH);
   return {static_cast<double>(gap), static_cast<double>(mapY + title),
@@ -319,7 +319,7 @@ struct App::State {
   std::vector<uint32_t> expanded;
   bool snapLayout = false;
   uint32_t selected = kNone;
-  int menuIndex = -1;
+  uint32_t menuNode = kNone;
   bool menuPending = false;
   MenuRequest menu;
   std::string lastTitle;
@@ -471,20 +471,19 @@ bool App::takeMenu(MenuRequest& out) {
 }
 
 void App::applyMenu(MenuCommand command, const Host& host) {
-  if (state->menuIndex < 0 || state->menuIndex >= static_cast<int>(state->tiles.size())) return;
-  const Tile& tile = state->tiles[static_cast<size_t>(state->menuIndex)];
-  if (tile.index == kNone) return;
+  const uint32_t index = state->menuNode;
+  if (!state->shown || index >= state->shown->nodes.size()) return;
   if (command == MenuCommand::Open && host.openPath) {
-    std::string path = state->pathOf(tile.index);
+    std::string path = state->pathOf(index);
     if (!path.empty()) host.openPath(path);
   } else if (command == MenuCommand::Reveal && host.revealPath) {
-    std::string path = state->pathOf(tile.index);
+    std::string path = state->pathOf(index);
     if (!path.empty()) host.revealPath(path);
   } else if (command == MenuCommand::CopyPath) {
-    state->copyIndex(tile.index, host, 0);
+    state->copyIndex(index, host, 0);
     state->noteUntil = 4;
   } else if (command == MenuCommand::Zoom) {
-    state->navigate(tile.index);
+    state->navigate(index);
   }
 }
 
@@ -764,9 +763,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
       s.menu.canCopy = !synthetic;
       s.menu.canZoom = dir;
       s.menuPending = true;
-      for (int i = 0; i < static_cast<int>(s.tiles.size()); ++i) {
-        if (s.tiles[static_cast<size_t>(i)].index == hot->index) s.menuIndex = i;
-      }
+      s.menuNode = hot->index;
     }
   }
 
@@ -799,16 +796,17 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   const int width = std::max(1, input.windowW);
   const int height = std::max(1, input.windowH);
   frame.resize(width, height, 0xf0f0f0);
-  const int gap = scaled(input.dpi, 8);
-  const int row1 = scaled(input.dpi, 64);
-  const int row2 = scaled(input.dpi, 30);
+  const int gap = scaled(input.controlDpi(), 8);
+  const int row1 = scaled(input.controlDpi(), 64);
+  const int row2 = scaled(input.controlDpi(), 30);
   const int statusH = scaled(input.dpi, 26);
   const bool pathBelow = true;
-  const int pathRow = pathBelow ? scaled(input.dpi, 32) + gap : 0;
+  const int pathRow = pathBelow ? scaled(input.controlDpi(), 32) + gap : 0;
   const int top = gap + row1 + gap + pathRow + row2 + gap;
-  const int progressH = scaled(input.dpi, 4);
+  const int progressH = scaled(input.controlDpi(), 4);
   const int font = std::max(11, scaled(input.dpi, 13));
   const int titlePx = std::max(12.0, static_cast<double>(scaled(input.dpi, 14)));
+  const int controlFont = std::max(11, scaled(input.controlDpi(), 13));
   fillRect(frame, 0, 0, width, top, 0xf8fafc);
   fillRect(frame, 0, gap + row1 + gap / 2, width, 1, 0xe5eaf0);
   fillRect(frame, 0, height - statusH, width, statusH, 0xe7ebf0);
@@ -828,7 +826,7 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
     next.push_back(hot);
   };
   const double toolScale = std::min(1.0, static_cast<double>(std::max(1, width - gap * 16)) /
-                                            scaled(input.dpi, 912));
+                                            scaled(input.controlDpi(), 912));
   auto button = [&](int& x, int y, int w, int h, const char* label, HotKind kind, bool enabled) {
     w = std::max(1, static_cast<int>(w * toolScale));
     bool hover = enabled && input.mouseX >= x && input.mouseY >= y && input.mouseX < x + w && input.mouseY < y + h;
@@ -837,13 +835,13 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
                          (kind == HotKind::ShowFree && s.options.showFree) ||
                          (kind == HotKind::ShowUnknown && s.options.showUnknown);
     uint32_t bg = hover ? 0xe5effa : (primary || checked) ? 0xeaf2fc : 0xf8fafc;
-    roundRect(frame, x, y, w, h, scaled(input.dpi, 7), bg);
+    roundRect(frame, x, y, w, h, scaled(input.controlDpi(), 7), bg);
     uint32_t ink = !enabled ? 0xb6c0cc : kind == HotKind::Stop ? 0xc36b63 : 0x35658e;
-    int iconSize = std::max(12, std::min(scaled(input.dpi, 24), w - 8));
-    toolbarIcon(frame, x + (w - iconSize) / 2, y + scaled(input.dpi, 7), iconSize, kind,
+    int iconSize = std::max(12, std::min(scaled(input.controlDpi(), 24), w - 8));
+    toolbarIcon(frame, x + (w - iconSize) / 2, y + scaled(input.controlDpi(), 7), iconSize, kind,
                 ink, enabled ? 0xd6e6f7 : 0xe9edf2);
-    drawText(frame, x + 2, y + scaled(input.dpi, 36), w - 4, scaled(input.dpi, 24),
-             label, enabled ? 0x34465b : 0xaab5c1, std::min(font, std::max(8, w / 4)), true);
+    drawText(frame, x + 2, y + scaled(input.controlDpi(), 36), w - 4, scaled(input.controlDpi(), 24),
+             label, enabled ? 0x34465b : 0xaab5c1, std::min(controlFont, std::max(8, w / 4)), true);
     if (enabled) addHot(x, y, w, h, kind);
     x += w + gap;
   };
@@ -852,54 +850,54 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
   int y = gap;
   const bool running = s.scanner.running();
   const bool hasTree = s.shown && !s.shown->nodes.empty();
-  button(x, y, scaled(input.dpi, 64), row1, zh::open(), HotKind::Open, true);
+  button(x, y, scaled(input.controlDpi(), 64), row1, zh::open(), HotKind::Open, true);
   int driveX = x;
-  button(x, y, scaled(input.dpi, 64), row1, zh::back(), HotKind::Back, !s.back.empty());
-  button(x, y, scaled(input.dpi, 64), row1, zh::forward(), HotKind::Forward, !s.forward.empty());
-  button(x, y, scaled(input.dpi, 64), row1, zh::up(), HotKind::Up, hasTree && s.view != 0);
-  button(x, y, scaled(input.dpi, 56), row1, zh::rootButton(), HotKind::Home, hasTree && s.view != 0);
-  button(x, y, scaled(input.dpi, 80), row1, zh::rescan(), HotKind::Rescan, !s.path.text.empty());
-  button(x, y, scaled(input.dpi, 64), row1, s.scanner.stopRequested() ? zh::stopping() : zh::stop(), HotKind::Stop,
+  button(x, y, scaled(input.controlDpi(), 64), row1, zh::back(), HotKind::Back, !s.back.empty());
+  button(x, y, scaled(input.controlDpi(), 64), row1, zh::forward(), HotKind::Forward, !s.forward.empty());
+  button(x, y, scaled(input.controlDpi(), 64), row1, zh::up(), HotKind::Up, hasTree && s.view != 0);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::rootButton(), HotKind::Home, hasTree && s.view != 0);
+  button(x, y, scaled(input.controlDpi(), 80), row1, zh::rescan(), HotKind::Rescan, !s.path.text.empty());
+  button(x, y, scaled(input.controlDpi(), 64), row1, s.scanner.stopRequested() ? zh::stopping() : zh::stop(), HotKind::Stop,
          running);
-  button(x, y, scaled(input.dpi, 64), row1, zh::exportCsv(), HotKind::Export, hasTree && !s.exportRunning);
-  button(x, y, scaled(input.dpi, 56), row1, zh::focusRescan(), HotKind::FocusRescan, hasTree && !running);
-  button(x, y, scaled(input.dpi, 56), row1, zh::lessDetailButton(), HotKind::LessDetail, hasTree && s.options.detail > 0);
-  button(x, y, scaled(input.dpi, 56), row1, zh::moreDetailButton(), HotKind::MoreDetail, hasTree && s.options.detail < 6);
-  button(x, y, scaled(input.dpi, 56), row1, zh::fileTypeButton(), HotKind::FileGroups, hasTree);
-  button(x, y, scaled(input.dpi, 56), row1, zh::showFreeButton(), HotKind::ShowFree, hasTree);
-  button(x, y, scaled(input.dpi, 56), row1, zh::showUnknownButton(), HotKind::ShowUnknown, hasTree);
-  button(x, y, scaled(input.dpi, 56), row1, zh::preferencesButton(), HotKind::Configure, static_cast<bool>(host.configure));
+  button(x, y, scaled(input.controlDpi(), 64), row1, zh::exportCsv(), HotKind::Export, hasTree && !s.exportRunning);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::focusRescan(), HotKind::FocusRescan, hasTree && !running);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::lessDetailButton(), HotKind::LessDetail, hasTree && s.options.detail > 0);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::moreDetailButton(), HotKind::MoreDetail, hasTree && s.options.detail < 6);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::fileTypeButton(), HotKind::FileGroups, hasTree);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::showFreeButton(), HotKind::ShowFree, hasTree);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::showUnknownButton(), HotKind::ShowUnknown, hasTree);
+  button(x, y, scaled(input.controlDpi(), 56), row1, zh::preferencesButton(), HotKind::Configure, static_cast<bool>(host.configure));
   int pathX = pathBelow ? gap : x + gap;
-  int pathY = pathBelow ? gap + row1 + gap : y + scaled(input.dpi, 25);
-  int pathH = scaled(input.dpi, 32);
+  int pathY = pathBelow ? gap + row1 + gap : y + scaled(input.controlDpi(), 25);
+  int pathH = scaled(input.controlDpi(), 32);
   int pathW = std::max(1, width - gap - pathX);
-  if (!pathBelow) drawText(frame, pathX, y, pathW, scaled(input.dpi, 22),
-                            zh::currentPath(), 0x7c8b9c, font - 1, false);
+  if (!pathBelow) drawText(frame, pathX, y, pathW, scaled(input.controlDpi(), 22),
+                            zh::currentPath(), 0x7c8b9c, controlFont - 1, false);
   uint32_t pathBorder = s.focus == Focus::Path ? 0x6b9dcd : 0xdce3ec;
-  roundRect(frame, pathX, pathY, pathW, pathH, scaled(input.dpi, 5), pathBorder);
-  roundRect(frame, pathX + 1, pathY + 1, pathW - 2, pathH - 2, scaled(input.dpi, 4), 0xffffff);
-  drawText(frame, pathX + scaled(input.dpi, 10), pathY, pathW - scaled(input.dpi, 20), pathH,
-           s.path.text, 0x34465b, font, false);
+  roundRect(frame, pathX, pathY, pathW, pathH, scaled(input.controlDpi(), 5), pathBorder);
+  roundRect(frame, pathX + 1, pathY + 1, pathW - 2, pathH - 2, scaled(input.controlDpi(), 4), 0xffffff);
+  drawText(frame, pathX + scaled(input.controlDpi(), 10), pathY, pathW - scaled(input.controlDpi(), 20), pathH,
+           s.path.text, 0x34465b, controlFont, false);
   addHot(pathX, pathY, pathW, pathH, HotKind::EditPath);
 
   auto field = [&](int& fx, int fy, int labelW, int boxW, const char* label, const Edit& edit, Focus which,
                    const char* hint, bool invalid, HotKind kind) {
-    drawText(frame, fx, fy, labelW, row2, label, 0x34495e, font, false);
+    drawText(frame, fx, fy, labelW, row2, label, 0x34495e, controlFont, false);
     fx += labelW;
     uint32_t border = invalid ? 0xc0392b : s.focus == which ? 0x6b9dcd : 0xdce3ec;
     fillRect(frame, fx, fy, boxW, row2, 0xffffff);
     strokeRect(frame, fx, fy, boxW, row2, border, s.focus == which || invalid ? 2 : 1);
     const std::string& shownText = edit.text.empty() && s.focus != which ? std::string(hint) : edit.text;
     uint32_t color = edit.text.empty() && s.focus != which ? 0x95a5a6 : 0x1f2933;
-    drawText(frame, fx + 4, fy, boxW - 8, row2, shownText, color, font, false);
+    drawText(frame, fx + 4, fy, boxW - 8, row2, shownText, color, controlFont, false);
     addHot(fx, fy, boxW, row2, kind);
     fx += boxW + gap;
   };
 
   x = gap;
   y = gap + row1 + gap + pathRow;
-  int filterLabelW = scaled(input.dpi, 36);
-  int minBoxW = std::min(scaled(input.dpi, 90), std::max(40, width / 7));
+  int filterLabelW = scaled(input.controlDpi(), 36);
+  int minBoxW = std::min(scaled(input.controlDpi(), 90), std::max(40, width / 7));
   int boxW = std::max(20, (width - gap * 5 - filterLabelW * 3 - minBoxW) / 2);
   field(x, y, filterLabelW, boxW, zh::include(), s.inc, Focus::Inc, zh::hintInclude(), false, HotKind::EditInc);
   field(x, y, filterLabelW, boxW, zh::exclude(), s.exc, Focus::Exc, zh::hintExclude(), false, HotKind::EditExc);

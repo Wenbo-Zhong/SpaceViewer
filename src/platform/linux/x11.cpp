@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include "host.hpp"
 #include "menu.hpp"
+#include "dpi.hpp"
 #include "text.hpp"
 
 #include <X11/Xatom.h>
@@ -28,7 +29,7 @@
 
 namespace {
 
-int readDpi(Display* display) {
+int readDpi(Display* display, bool physicalDensity = true) {
   int dpi = 96;
   char* resource = XResourceManagerString(display);
   if (resource) {
@@ -48,7 +49,11 @@ int readDpi(Display* display) {
       if (factor >= 1 && factor <= 4) dpi = 96 * factor;
     }
   }
-  return dpi;
+  if (!physicalDensity) return std::clamp(dpi, 96, 384);
+  const int screen = DefaultScreen(display);
+  const double density = linuxDensityScale(DisplayWidth(display, screen), DisplayHeight(display, screen),
+                                           DisplayWidthMM(display, screen), DisplayHeightMM(display, screen));
+  return std::clamp(std::max(dpi, static_cast<int>(96 * density)), 96, 384);
 }
 
 struct X11App {
@@ -114,7 +119,7 @@ bool traditionalChinese() {
 }
 
 XftFont* fontFor(X11App& app, int px, bool cjk = false) {
-  if (px < 8) px = 8;
+  if (px < 6) px = 6;
   auto& sizes = cjk ? app.cjkFontPx : app.fontPx;
   auto& fonts = cjk ? app.cjkFonts : app.fonts;
   for (size_t i = 0; i < sizes.size(); ++i) {
@@ -163,19 +168,35 @@ void drawTexts(X11App& app, const Frame& frame) {
     rc.alpha = 65535;
     XftColor color;
     if (!XftColorAllocValue(app.display, DefaultVisual(app.display, app.screen), app.colormap, &rc, &color)) continue;
+    int px = std::max(6, text.fontPx);
+    int totalWidth = 0, height = 0, ascent = 0, inkLeft = 0, inkRight = 0;
+    auto measure = [&]() {
+      totalWidth = 0;
+      height = 0;
+      ascent = 0;
+      inkLeft = 0;
+      inkRight = 0;
+      bool hasInk = false;
+      for (const auto& run : runs) {
+        XftFont* font = fontFor(app, px, run.second);
+        if (!font) continue;
+        XGlyphInfo extent{};
+        XftTextExtentsUtf8(app.display, font, reinterpret_cast<const FcChar8*>(run.first.data()), static_cast<int>(run.first.size()), &extent);
+        const int left = totalWidth + extent.x;
+        const int right = left + extent.width;
+        if (extent.width > 0) {
+          if (!hasInk) { inkLeft = left; inkRight = right; hasInk = true; }
+          else { inkLeft = std::min(inkLeft, left); inkRight = std::max(inkRight, right); }
+        }
+        totalWidth += extent.xOff;
+        height = std::max(height, font->ascent + font->descent);
+        ascent = std::max(ascent, font->ascent);
+      }
+    };
+    measure();
+    while (height > text.h && px > 6) { --px; measure(); }
     int x = text.x;
-    int totalWidth = 0;
-    int height = 0, ascent = 0;
-    for (const auto& run : runs) {
-      XftFont* font = fontFor(app, text.fontPx, run.second);
-      if (!font) continue;
-      XGlyphInfo extent{};
-      XftTextExtentsUtf8(app.display, font, reinterpret_cast<const FcChar8*>(run.first.data()), static_cast<int>(run.first.size()), &extent);
-      totalWidth += extent.xOff;
-      height = std::max(height, font->ascent + font->descent);
-      ascent = std::max(ascent, font->ascent);
-    }
-    if (text.center) x += std::max(0, (text.w - totalWidth) / 2);
+    if (text.center) x += std::max(0, (text.w - (inkRight - inkLeft)) / 2) - inkLeft;
     int y = text.y + std::max(0, (text.h - height) / 2) + ascent;
     Region region = XCreateRegion();
     XRectangle rectangle{static_cast<short>(text.x), static_cast<short>(text.y), static_cast<unsigned short>(text.w),
@@ -183,7 +204,7 @@ void drawTexts(X11App& app, const Frame& frame) {
     XUnionRectWithRegion(&rectangle, region, region);
     XftDrawSetClip(app.draw, region);
     for (const auto& run : runs) {
-      XftFont* font = fontFor(app, text.fontPx, run.second);
+      XftFont* font = fontFor(app, px, run.second);
       if (!font) continue;
       XGlyphInfo extent{};
       XftTextExtentsUtf8(app.display, font, reinterpret_cast<const FcChar8*>(run.first.data()), static_cast<int>(run.first.size()), &extent);
@@ -284,8 +305,8 @@ int spaceviewer_x11_main(int argc, char** argv) {
   }
   app.dpi = readDpi(display);
   app.colormap = DefaultColormap(display, app.screen);
-  int width = 1100 * app.dpi / 96;
-  int height = 740 * app.dpi / 96;
+  int width = std::min(1100 * app.dpi / 96, DisplayWidth(display, app.screen) * 9 / 10);
+  int height = std::min(740 * app.dpi / 96, DisplayHeight(display, app.screen) * 9 / 10);
   app.width = width;
   app.height = height;
   app.window = XCreateSimpleWindow(display, RootWindow(display, app.screen), 0, 0, width, height, 0,
@@ -324,6 +345,7 @@ int spaceviewer_x11_main(int argc, char** argv) {
     app.input.windowW = app.width;
     app.input.windowH = app.height;
     app.input.dpi = static_cast<float>(app.dpi);
+    app.input.chromeDpi = static_cast<float>(readDpi(display, false));
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     app.input.timeSec = static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1e9;
@@ -335,9 +357,17 @@ int spaceviewer_x11_main(int argc, char** argv) {
     if (app.menu.rootScanRequested) {
       app.menu.rootScanRequested = false;
       if (!linuxLaunchRootScan()) std::fprintf(stderr, "SpaceViewer: cannot start pkexec root scan\n");
+      else app.running = false;
+    }
+    if (app.menu.contextCommand != MenuCommand{}) {
+      app.app.applyMenu(app.menu.contextCommand, host);
+      app.menu.contextCommand = MenuCommand{};
     }
     app.app.update(uiInput, host, frame);
-    linuxMenuPresent(app.menu, frame, windowHeight, uiInput.dpi, false);
+    MenuRequest context;
+    if (app.app.takeMenu(context))
+      linuxMenuShowContext(app.menu, context, uiInput.windowW, windowHeight, uiInput.controlDpi(), false);
+    linuxMenuPresent(app.menu, frame, windowHeight, uiInput.controlDpi(), false);
     present(app, frame);
     clearEdges(app.input);
   };

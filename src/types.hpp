@@ -140,6 +140,17 @@ struct Input {
   int windowW = 0;
   int windowH = 0;
   float dpi = 96.f;
+#if defined(__linux__)
+  // Linux can keep physical-density scaling for the view while using the
+  // desktop's control size for window chrome and toolbars.
+  float chromeDpi = 0.f;
+#endif
+  float controlDpi() const {
+#if defined(__linux__)
+    if (chromeDpi > 0.f) return chromeDpi;
+#endif
+    return dpi;
+  }
   int mouseX = 0;
   int mouseY = 0;
   int command = -1;
