@@ -63,7 +63,7 @@ CMake 使用 `/MT`，因此 Release 目录里的 `SpaceViewer.exe` 不依赖 VC 
 
 ## Ubuntu
 
-需要 X11 和 Wayland 两套依赖。会话里有 `WAYLAND_DISPLAY` 时用 Wayland，连不上再退回 X11。也可以用 `SPACEVIEWER_BACKEND=wayland` 或 `SPACEVIEWER_BACKEND=x11` 指定。
+需要 X11 和 Wayland 两套依赖。会话里有 `WAYLAND_DISPLAY` 时默认用 Wayland，连不上再退回 X11。也可以用 `--x11` 或 `--wayland` 参数强制选择，例如 `./SpaceViewer --x11`；环境变量 `SPACEVIEWER_BACKEND=wayland` 或 `SPACEVIEWER_BACKEND=x11` 也可指定后端。
 
 ```sh
 sudo apt install build-essential cmake pkg-config \
