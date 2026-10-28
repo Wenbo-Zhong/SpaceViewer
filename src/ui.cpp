@@ -1063,14 +1063,19 @@ void App::update(const Input& input, const Host& host, Frame& frame) {
         }
       } else if (labelVisible && !tile.container && tw >= tileFont * 2 + 2 && th >= tileFont + 2) {
         std::string shortName = compact ? compactTileText(name, tw - 4, tileFont) : name;
-        if (th >= tileFont * 2 + 4) {
+        // A single name must use the whole tile, even when height would allow
+        // two lines but the width is too small to display the size.
+#if defined(__APPLE__)
+        const int line = (tileFont * 14 + 9) / 10;
+#else
+        const int line = tileFont + 1;
+#endif
+        if (th >= line * 2 + 2 && tw >= tileFont * 4) {
           std::string compactSize = sizeText;
           if (compact) compactSize.erase(std::remove(compactSize.begin(), compactSize.end(), ' '), compactSize.end());
-          int line = tileFont + 1;
           int y0 = ty + (th - line * 2) / 2;
           drawText(frame, tx + 2, y0, tw - 4, line, shortName, labelColor, tileFont, true);
-          if (tw >= tileFont * 4)
-            drawText(frame, tx + 2, y0 + line, tw - 4, line, compactSize, labelColor, tileFont, true);
+          drawText(frame, tx + 2, y0 + line, tw - 4, line, compactSize, labelColor, tileFont, true);
         } else {
           drawText(frame, tx + 2, ty + 1, tw - 4, th - 2, shortName, labelColor, tileFont, true);
         }

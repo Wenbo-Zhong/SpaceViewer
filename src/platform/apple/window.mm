@@ -430,7 +430,11 @@ static SVView* gView = nil;
       }
       CGFloat x = text.x / scale;
       CGFloat y = NSHeight(self.bounds) - (text.y + text.h) / scale;
-      [attributed drawInRect:NSMakeRect(x, y, text.w / scale, text.h / scale)];
+      // AppKit needs the complete font line box, including descenders. A box
+      // based only on the requested font size clips letters such as g and y.
+      CGFloat lineHeight = std::ceil([attributed size].height * scale) / scale;
+      CGFloat centeredY = y + (text.h / scale - lineHeight) * 0.5;
+      [attributed drawInRect:NSMakeRect(x, centeredY, text.w / scale, lineHeight)];
     }
   }
   if (app_->animating()) {
