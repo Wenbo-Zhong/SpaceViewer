@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.24)
 project(SpaceViewer VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -38,6 +38,7 @@ foreach(font IN ITEMS SourceHanSansSC-Regular.otf SourceHanSansTC-Regular.otf)
   if(NOT font_parts)
     message(FATAL_ERROR "Missing bundled font parts for ${font}")
   endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${font_parts})
   set(combined_font "${SPACEVIEWER_GENERATED_FONTS_DIR}/${font}")
   execute_process(
     COMMAND "${CMAKE_COMMAND}" -E cat ${font_parts}
@@ -72,13 +73,17 @@ if(WIN32)
     add_dependencies(spaceviewer spaceviewer_manifest)
     target_link_options(spaceviewer PRIVATE -static -static-libgcc -static-libstdc++ "SHELL:-B ${manifest_dir}/" -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
   endif()
-  target_link_libraries(spaceviewer PRIVATE comctl32 user32 gdi32 shell32 ole32 uuid comdlg32)
-  add_custom_command(TARGET spaceviewer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:spaceviewer>/fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACEVIEWER_FONTS} "$<TARGET_FILE_DIR:spaceviewer>/fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACEVIEWER_FONT_LICENSES} "$<TARGET_FILE_DIR:spaceviewer>/fonts"
-    VERBATIM)
+  target_link_libraries(spaceviewer PRIVATE comctl32 user32 gdi32 shell32 ole32 uuid oleaut32 comdlg32)
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Inter-Regular.ttf" "${SPACEVIEWER_GENERATED_FONTS_DIR}/Inter-Regular.ttf" COPYONLY)
+  foreach(license IN LISTS SPACEVIEWER_FONT_LICENSES)
+    get_filename_component(name "${license}" NAME)
+    configure_file("${license}" "${SPACEVIEWER_GENERATED_FONTS_DIR}/${name}" COPYONLY)
+  endforeach()
+  target_include_directories(spaceviewer PRIVATE "${SPACEVIEWER_GENERATED_FONTS_DIR}" src/platform/win)
+  set_property(SOURCE src/platform/win/app.rc APPEND PROPERTY OBJECT_DEPENDS
+    "${SPACEVIEWER_FONTS};${SPACEVIEWER_FONT_LICENSES}")
 elseif(APPLE)
+  enable_language(OBJCXX)
   target_sources(spaceviewer PRIVATE
     src/platform/apple/window.mm
     src/platform/apple/disk_space.mm
@@ -98,6 +103,8 @@ elseif(APPLE)
   set_source_files_properties(src/platform/apple/PrivacyInfo.xcprivacy
     PROPERTIES HEADER_FILE_ONLY TRUE MACOSX_PACKAGE_LOCATION Resources)
   set_target_properties(spaceviewer PROPERTIES
+    OBJCXX_STANDARD 17
+    OBJCXX_STANDARD_REQUIRED TRUE
     OUTPUT_NAME SpaceViewer
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_BUNDLE_NAME SpaceViewer

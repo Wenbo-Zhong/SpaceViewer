@@ -45,7 +45,7 @@ struct WinState {
   int bmpH = 0;
   std::vector<HFONT> fonts;
   std::vector<int> fontPx;
-  std::vector<std::wstring> registeredFontPaths;
+  std::vector<HANDLE> registeredFonts;
   wchar_t highSurrogate = 0;
   LARGE_INTEGER qpf{};
 };
@@ -110,23 +110,19 @@ void clearEdges(Input& input) {
   input.typed.clear();
 }
 
-std::wstring appDirectory() {
-  wchar_t path[32768] = {};
-  DWORD size = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
-  if (!size || size >= std::size(path)) return L".";
-  std::wstring result(path);
-  size_t separator = result.find_last_of(L"\\/");
-  if (separator != std::wstring::npos) result.resize(separator);
-  return result;
-}
-
 void loadBundledFonts(WinState& state) {
-  std::wstring directory = appDirectory() + L"\\fonts\\";
-  for (const wchar_t* name : {L"Inter-Regular.ttf", L"SourceHanSansSC-Regular.otf", L"SourceHanSansTC-Regular.otf"}) {
-    std::wstring path = directory + name;
-    if (AddFontResourceExW(path.c_str(), FR_PRIVATE, nullptr)) state.registeredFontPaths.push_back(path);
+  const HMODULE module = GetModuleHandleW(nullptr);
+  for (int id : {301, 302, 303}) {
+    HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10));
+    if (!resource) continue;
+    HGLOBAL data = LoadResource(module, resource);
+    if (!data) continue;
+    DWORD fontCount = 0;
+    if (HANDLE font = AddFontMemResourceEx(LockResource(data), SizeofResource(module, resource),
+                                           nullptr, &fontCount)) {
+      state.registeredFonts.push_back(font);
+    }
   }
-  SendMessageTimeoutW(HWND_BROADCAST, WM_FONTCHANGE, 0, 0, SMTO_ABORTIFHUNG, 1000, nullptr);
 }
 
 HFONT fontFor(WinState& state, int px, bool cjk = false) {
@@ -901,7 +897,7 @@ int spaceviewer_main(int, char**) {
     DispatchMessageW(&message);
   }
   for (HFONT font : state.fonts) DeleteObject(font);
-  for (const std::wstring& path : state.registeredFontPaths) RemoveFontResourceExW(path.c_str(), FR_PRIVATE, nullptr);
+  for (HANDLE font : state.registeredFonts) RemoveFontMemResourceEx(font);
   if (state.memDc) {
     SelectObject(state.memDc, state.oldBitmap);
     DeleteObject(state.bitmap);

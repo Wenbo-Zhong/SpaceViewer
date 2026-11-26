@@ -1,0 +1,65 @@
+name: Build SpaceViewer
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows x64
+        run: |
+          cmake -S . -B build -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build --config Release --parallel
+      - name: Test standalone executable
+        run: |
+          $exe = (Resolve-Path build/Release/SpaceViewer.exe).Path
+          $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -WorkingDirectory (Split-Path $exe) -WindowStyle Hidden -PassThru -Wait
+          exit $p.ExitCode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpaceViewer-Windows-x64
+          path: build/Release/SpaceViewer.exe
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal macOS app
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
+          cmake --build build --parallel
+          build/SpaceViewer.app/Contents/MacOS/SpaceViewer --self-test
+          for file in Inter-Regular.ttf SourceHanSansSC-Regular.otf SourceHanSansTC-Regular.otf Inter-LICENSE.txt SourceHanSans-LICENSE.txt; do
+            test -s "build/SpaceViewer.app/Contents/Resources/Fonts/$file"
+          done
+          ditto -c -k --keepParent build/SpaceViewer.app SpaceViewer-macOS-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpaceViewer-macOS-universal
+          path: SpaceViewer-macOS-universal.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxft-dev libwayland-dev wayland-protocols libxkbcommon-dev libfontconfig1-dev libfreetype-dev
+      - name: Build and package Linux x64
+        run: sh package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpaceViewer-Linux-x64
+          path: out/*.tar.gz
+          if-no-files-found: error

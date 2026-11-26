@@ -2,7 +2,7 @@
 
 跨平台磁盘占用查看器，交互方式和 SpaceSniffer 同一类：矩形树图按文件和文件夹的大小占面积，扫描过程中图形会增长，点击文件夹进入，可以按名称过滤、查看详情、打开文件并导出 CSV。
 
-界面默认使用随程序打包的 Inter（拉丁文字）和思源黑体（简体或繁体中文）。字体及许可证位于 `assets/fonts/`；Windows 构建会在 exe 旁输出 `fonts/` 目录。
+界面默认使用随程序打包的 Inter（拉丁文字）和思源黑体（简体或繁体中文）。字体及许可证位于 `assets/fonts/`；Windows 将字体和许可证嵌入 EXE，macOS 放入 .app，Linux 分发包包含程序与字体。
 
 界面语言会按系统语言自动选择简体中文、繁体中文或英文；其他系统语言默认显示英文。文案位于 [`locales/`](locales/README.md)，新增语言可通过提交 `locales/<BCP-47>/strings.json` 参与翻译。
 
@@ -77,13 +77,15 @@ cmake --build build
 
 没有 CMake 时可以 `sh build-linux.sh`。选择文件夹需要 `zenity` 或 `kdialog`；没有这两个程序时，在路径栏输入路径后回车。X11 高分屏请让 `Xft.dpi` 等于实际 DPI。Wayland 使用输出的整数缩放，界面按物理像素绘制。
 
-生成用于分发的单个可执行文件（安装上述编译依赖后）：
+生成包含程序和字体的分发包（安装上述编译依赖后）：
 
 ```sh
 sh package-linux.sh
 ```
 
-输出为 `out/SpaceViewer-ubuntu-x86_64`（ARM64 上为 `aarch64`），已去除调试符号、设置可执行权限并运行自检。在文件管理器中双击即可启动；复制或下载后如果可执行权限丢失，在文件属性的权限页启用“允许作为程序执行”。这是原生 Linux 可执行文件，仍使用系统的 X11、Wayland、Fontconfig、FreeType 和 C++ 运行库，不是静态链接包或 AppImage。应在计划支持的最旧 Ubuntu 版本上构建；在 Ubuntu 26.04 上生成的文件只验证了 Ubuntu 26.04，不保证兼容较旧发行版。
+输出为 `out/SpaceViewer-ubuntu-x86_64.tar.gz`（ARM64 上为 `aarch64`）。解压后运行包内的 `spaceviewer`，并保留包内的 `fonts/`。程序使用系统提供的 X11、Wayland、Fontconfig、FreeType 和 C++ 运行库。
+
+GitHub Actions 在推送、拉取请求或手动触发时构建三平台产物。可从对应运行记录的 Artifacts 下载 Windows x64 单文件 EXE、macOS 通用 .app 压缩包及 Ubuntu x64 tar.gz。CMake 构建需要 3.24 或更新版本。
 
 ## macOS
 

@@ -3,6 +3,11 @@
 
 1 24 "spaceviewer.manifest"
 101 ICON "spaceviewer.ico"
+301 RCDATA "Inter-Regular.ttf"
+302 RCDATA "SourceHanSansSC-Regular.otf"
+303 RCDATA "SourceHanSansTC-Regular.otf"
+304 RCDATA "Inter-LICENSE.txt"
+305 RCDATA "SourceHanSans-LICENSE.txt"
 
 200 DIALOGEX 0, 0, 360, 274
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU

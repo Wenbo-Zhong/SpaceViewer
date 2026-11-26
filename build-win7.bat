@@ -15,19 +15,19 @@ if errorlevel 1 (
 if not exist win mkdir win
 gcc -c src\platform\win\empty_manifest.c -o win\default-manifest.o
 if errorlevel 1 exit /b 1
-windres -O coff -i src\platform\win\app.rc -o src\platform\win\app.res.o
+if not exist win\fonts mkdir win\fonts
+copy /y assets\fonts\Inter-Regular.ttf win\fonts\ >nul
+copy /b assets\fonts\parts\SourceHanSansSC-Regular.otf.part00+assets\fonts\parts\SourceHanSansSC-Regular.otf.part01+assets\fonts\parts\SourceHanSansSC-Regular.otf.part02 win\fonts\SourceHanSansSC-Regular.otf >nul
 if errorlevel 1 exit /b 1
-g++ -std=c++17 -O2 -s -B win\ -Isrc -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 -DNOMINMAX -mwindows -static -static-libgcc -static-libstdc++ -o SpaceViewer.exe src\main.cpp src\util.cpp src\layout.cpp src\scan.cpp src\ui.cpp src\export.cpp src\selftest.cpp src\motion.cpp src\opencl_fill.cpp src\platform\win\window.cpp src\platform\win\app.res.o -lcomctl32 -luser32 -lgdi32 -lshell32 -lole32 -luuid -loleaut32 -lcomdlg32 -lwinpthread
+copy /b assets\fonts\parts\SourceHanSansTC-Regular.otf.part00+assets\fonts\parts\SourceHanSansTC-Regular.otf.part01+assets\fonts\parts\SourceHanSansTC-Regular.otf.part02 win\fonts\SourceHanSansTC-Regular.otf >nul
+if errorlevel 1 exit /b 1
+copy /y assets\fonts\Inter-LICENSE.txt win\fonts\ >nul
+copy /y assets\fonts\SourceHanSans-LICENSE.txt win\fonts\ >nul
+windres -I win/fonts -O coff -i src\platform\win\app.rc -o src\platform\win\app.res.o
+if errorlevel 1 exit /b 1
+g++ -std=c++17 -O2 -s -B win\ -Isrc -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 -DNOMINMAX -mwindows -static -static-libgcc -static-libstdc++ -o SpaceViewer.exe src\main.cpp src\util.cpp src\layout.cpp src\scan.cpp src\ui.cpp src\export.cpp src\selftest.cpp src\motion.cpp src\opencl_fill.cpp src\text.cpp src\platform\win\window.cpp src\platform\win\app.res.o -lcomctl32 -luser32 -lgdi32 -lshell32 -lole32 -luuid -loleaut32 -lcomdlg32 -lwinpthread
 set ERR=%ERRORLEVEL%
 del /q src\platform\win\app.res.o >nul 2>nul
 if not %ERR%==0 exit /b %ERR%
-if not exist fonts mkdir fonts
-copy /y assets\fonts\Inter-Regular.ttf fonts\ >nul
-copy /b assets\fonts\parts\SourceHanSansSC-Regular.otf.part00+assets\fonts\parts\SourceHanSansSC-Regular.otf.part01+assets\fonts\parts\SourceHanSansSC-Regular.otf.part02 fonts\SourceHanSansSC-Regular.otf >nul
-if errorlevel 1 exit /b 1
-copy /b assets\fonts\parts\SourceHanSansTC-Regular.otf.part00+assets\fonts\parts\SourceHanSansTC-Regular.otf.part01+assets\fonts\parts\SourceHanSansTC-Regular.otf.part02 fonts\SourceHanSansTC-Regular.otf >nul
-if errorlevel 1 exit /b 1
-copy /y assets\fonts\Inter-LICENSE.txt fonts\ >nul
-copy /y assets\fonts\SourceHanSans-LICENSE.txt fonts\ >nul
 echo Built SpaceViewer.exe
 exit /b 0
