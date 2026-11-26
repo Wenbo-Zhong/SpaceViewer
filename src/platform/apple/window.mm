@@ -400,6 +400,11 @@ static SVView* gView = nil;
     for (const Frame::Text& text : frame.texts) {
       NSString* string = [NSString stringWithUTF8String:text.utf8.c_str()];
       if (!string) continue;
+      // Frame text is a single-line label; only normalize its display value.
+      NSCharacterSet* newlines = [NSCharacterSet newlineCharacterSet];
+      if ([string rangeOfCharacterFromSet:newlines].location != NSNotFound) {
+        string = [[string componentsSeparatedByCharactersInSet:newlines] componentsJoinedByString:@" "];
+      }
       NSMutableParagraphStyle* style = [[NSMutableParagraphStyle alloc] init];
       style.lineBreakMode = NSLineBreakByTruncatingTail;
       style.alignment = text.center ? NSTextAlignmentCenter : NSTextAlignmentLeft;
