@@ -22,7 +22,8 @@ jobs:
         run: |
           $exe = (Resolve-Path build/Release/SpaceViewer.exe).Path
           $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -WorkingDirectory (Split-Path $exe) -WindowStyle Hidden -PassThru -Wait
-          exit $p.ExitCode
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          ctest --test-dir build -C Release -R '^layout_cache$' --output-on-failure
       - uses: actions/upload-artifact@v4
         with:
           name: SpaceViewer-Windows-x64
@@ -38,6 +39,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
           cmake --build build --parallel
           build/SpaceViewer.app/Contents/MacOS/SpaceViewer --self-test
+          ctest --test-dir build -R '^(layout_cache|apple_text_cache)$' --output-on-failure
           for file in Inter-Regular.ttf SourceHanSansSC-Regular.otf SourceHanSansTC-Regular.otf Inter-LICENSE.txt SourceHanSans-LICENSE.txt; do
             test -s "build/SpaceViewer.app/Contents/Resources/Fonts/$file"
           done
