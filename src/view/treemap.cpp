@@ -78,12 +78,16 @@ void App::State::renderTreemap(const Input& input, Frame& frame, std::vector<Hot
     s.frameAnim = s.frameAnim || !s.changes.empty();
 #if defined(__APPLE__)
     // AppKit consumes CPU pixels. Filling them directly avoids synchronous
-    // full-frame OpenCL uploads and readbacks, including on unified memory.
-    const bool gpu = false;
+    // full-frame OpenCL uploads/readbacks. Keep the existing batch eligibility
+    // and border ordering; overlapping navigation layers paint individually.
+    const bool layered = std::any_of(s.tiles.begin(), s.tiles.end(), [](const Tile& tile) { return tile.exiting; });
+    const bool prefilled = !layered && mapW >= 64 && mapH >= 64 && s.tiles.size() >= 24;
+    if (prefilled)
+      fillTilePixels(frame, s.tiles, mapX, mapY, mapW, mapH, 1, s.options.fileGroups);
 #else
     // Overlapping navigation layers must paint each fill with its border.
     const bool layered = std::any_of(s.tiles.begin(), s.tiles.end(), [](const Tile& tile) { return tile.exiting; });
-    const bool gpu = !layered && openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, 1, s.options.fileGroups);
+    const bool prefilled = !layered && openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, 1, s.options.fileGroups);
 #endif
     int hoverTile = -1;
     for (int i = 0; i < static_cast<int>(s.tiles.size()); ++i) {
@@ -96,7 +100,7 @@ void App::State::renderTreemap(const Input& input, Frame& frame, std::vector<Hot
       if (tile.flags & kFree) base = categoryColor(CatFree);
       if (tile.flags & kPending) base = 0xf5cba7;
       const uint32_t titleColor = shadeColor(base, 12), dividerColor = shadeColor(base, -30);
-      if (!gpu) {
+      if (!prefilled) {
         if (th < 8) fillRect(frame, tx, ty, tw, th, base);
         else fillGradient(frame, tx, ty, tw, th, shadeColor(base, 5), shadeColor(base, -5));
       }
@@ -121,7 +125,7 @@ void App::State::renderTreemap(const Input& input, Frame& frame, std::vector<Hot
       if (labelVisible && tile.title.h >= compactFont + 1) {
         int hy = iFloor(tile.title.y), hh = iFloor(tile.title.y + tile.title.h) - hy;
         int textH = hh - 1;
-        if (!gpu) {
+        if (!prefilled) {
           fillRect(frame, tx, hy, tw, hh, titleColor);
           fillRect(frame, tx, hy + hh - 1, tw, 1, dividerColor);
         }
