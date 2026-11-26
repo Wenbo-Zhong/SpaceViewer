@@ -238,6 +238,9 @@ endif()
 endif() # SPACEVIEWER_BUILD_APP
 
 if(BUILD_TESTING)
+  add_executable(spaceviewer_fill_tests tests/tile_fill_test.cpp)
+  target_link_libraries(spaceviewer_fill_tests PRIVATE spaceviewer_core)
+  add_test(NAME tile_fill COMMAND spaceviewer_fill_tests)
   add_executable(spaceviewer_layout_tests tests/layout_cache_test.cpp)
   target_link_libraries(spaceviewer_layout_tests PRIVATE spaceviewer_core)
   add_test(NAME layout_cache COMMAND spaceviewer_layout_tests)
