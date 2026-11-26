@@ -97,6 +97,7 @@ void App::State::copyIndex(uint32_t index, const Host& host, double now) {
 void App::State::refreshSnapshot(const Host& host) {
   refreshFilter();
   shown = scanner.snapshot();
+  if (!shown || shown->nodes.empty()) layoutCache = TreemapLayoutCache{};
   if (shown && shown->complete && shown->permissionErrors > 0 && !archived &&
       !permissionWarningShown && host.permissionWarning) {
     permissionWarningShown = true;
@@ -106,6 +107,7 @@ void App::State::refreshSnapshot(const Host& host) {
   if (key != visibleKey || inc.text != visibleInc || exc.text != visibleExc ||
       filter.minSize != visibleMin) {
     visible = shown ? computeVisible(*shown, filter) : std::vector<uint64_t>{};
+    ++visibleRevision;
     visibleKey = key;
     visibleInc = inc.text;
     visibleExc = exc.text;

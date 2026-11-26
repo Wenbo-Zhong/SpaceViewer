@@ -35,6 +35,7 @@ add_library(spaceviewer_core STATIC
   src/model/filter.cpp
   src/model/category.cpp
   src/view/layout.cpp
+  src/view/layout_cache.cpp
   src/scan/scanner.cpp
   src/scan/tasks.cpp
   src/scan/tree_updates.cpp
@@ -78,6 +79,12 @@ endif()
 if(SPACEVIEWER_BUILD_APP OR BUILD_TESTING)
   add_library(spaceviewer_test_support STATIC tests/selftest.cpp)
   target_link_libraries(spaceviewer_test_support PUBLIC spaceviewer_core)
+endif()
+
+if(APPLE AND (SPACEVIEWER_BUILD_APP OR BUILD_TESTING))
+  add_library(spaceviewer_apple_text STATIC src/platform/apple/text_renderer.mm)
+  target_link_libraries(spaceviewer_apple_text PUBLIC spaceviewer_core "-framework CoreText")
+  set_source_files_properties(src/platform/apple/text_renderer.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
 if(SPACEVIEWER_BUILD_APP)
@@ -138,6 +145,7 @@ if(WIN32)
   set_property(SOURCE src/platform/win/app.rc APPEND PROPERTY OBJECT_DEPENDS
     "${SPACEVIEWER_FONTS};${SPACEVIEWER_FONT_LICENSES}")
 elseif(APPLE)
+  target_link_libraries(spaceviewer PRIVATE spaceviewer_apple_text)
   target_sources(spaceviewer PRIVATE
     src/platform/apple/window.mm
     src/platform/apple/PrivacyInfo.xcprivacy

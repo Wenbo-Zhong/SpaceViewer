@@ -2,6 +2,7 @@
 #include "i18n/text.hpp"
 #include "i18n/unicode.hpp"
 #include "platform/posix/volume.hpp"
+#include "platform/apple/text_renderer.hpp"
 
 #import <Cocoa/Cocoa.h>
 #import <CoreText/CoreText.h>
@@ -15,10 +16,6 @@
 #include <cstdlib>
 
 namespace {
-
-NSString* bundledCjkFontName() {
-  return zh::language() == zh::Language::TraditionalChinese ? @"Source Han Sans TC" : @"Source Han Sans SC";
-}
 
 void registerBundledFonts() {
   NSString* fonts = [[[NSBundle mainBundle] resourceURL] URLByAppendingPathComponent:@"Fonts" isDirectory:YES].path;
@@ -68,6 +65,8 @@ static SVView* gView = nil;
   App* app_;
   Input input_;
   Host host_;
+  Frame frame_;
+  spaceviewer::apple::TextRenderer textRenderer_;
   bool scannedArg_;
   NSTrackingArea* trackingArea_;
 }
@@ -326,7 +325,7 @@ static SVView* gView = nil;
   input_.windowH = std::max(1, static_cast<int>(std::lround(backing.size.height)));
   input_.dpi = static_cast<float>(96.0 * scale);
   input_.timeSec = [NSDate timeIntervalSinceReferenceDate];
-  Frame frame;
+  Frame& frame = frame_;
   app_->update(input_, host_, frame);
   MenuRequest menuRequest;
   const bool showContextMenu = app_->takeMenu(menuRequest);
@@ -347,50 +346,7 @@ static SVView* gView = nil;
     CGDataProviderRelease(provider);
     CGColorSpaceRelease(space);
 
-    for (const Frame::Text& text : frame.texts) {
-      NSString* string = [NSString stringWithUTF8String:text.utf8.c_str()];
-      if (!string) continue;
-      // Frame text is a single-line label; only normalize its display value.
-      NSCharacterSet* newlines = [NSCharacterSet newlineCharacterSet];
-      if ([string rangeOfCharacterFromSet:newlines].location != NSNotFound) {
-        string = [[string componentsSeparatedByCharactersInSet:newlines] componentsJoinedByString:@" "];
-      }
-      NSMutableParagraphStyle* style = [[NSMutableParagraphStyle alloc] init];
-      style.lineBreakMode = NSLineBreakByTruncatingTail;
-      style.alignment = text.center ? NSTextAlignmentCenter : NSTextAlignmentLeft;
-      CGFloat pointSize = std::max(8.0, text.fontPx / scale);
-      NSFont* font = [NSFont fontWithName:@"Inter" size:pointSize];
-      if (!font) font = [NSFont systemFontOfSize:pointSize];
-      NSColor* color = [NSColor colorWithCalibratedRed:((text.rgb >> 16) & 255) / 255.0
-                                                 green:((text.rgb >> 8) & 255) / 255.0
-                                                  blue:(text.rgb & 255) / 255.0
-                                                 alpha:1];
-      NSMutableAttributedString* attributed = [[NSMutableAttributedString alloc] initWithString:string attributes:@{
-        NSFontAttributeName : font,
-        NSForegroundColorAttributeName : color,
-        NSParagraphStyleAttributeName : style
-      }];
-      NSString* cjkName = bundledCjkFontName();
-      NSFont* cjkFont = [NSFont fontWithName:cjkName size:pointSize];
-      if (cjkFont) {
-        for (NSUInteger index = 0; index < string.length;) {
-          NSRange range = [string rangeOfComposedCharacterSequenceAtIndex:index];
-          uint32_t cp = [string characterAtIndex:index];
-          if (CFStringIsSurrogateHighCharacter(static_cast<UniChar>(cp)) && index + 1 < string.length) {
-            cp = CFStringGetLongCharacterForSurrogatePair(static_cast<UniChar>(cp), [string characterAtIndex:index + 1]);
-          }
-          if (isChinese(cp)) [attributed addAttribute:NSFontAttributeName value:cjkFont range:range];
-          index = NSMaxRange(range);
-        }
-      }
-      CGFloat x = text.x / scale;
-      CGFloat y = NSHeight(self.bounds) - (text.y + text.h) / scale;
-      // AppKit needs the complete font line box, including descenders. A box
-      // based only on the requested font size clips letters such as g and y.
-      CGFloat lineHeight = std::ceil([attributed size].height * scale) / scale;
-      CGFloat centeredY = y + (text.h / scale - lineHeight) * 0.5;
-      [attributed drawInRect:NSMakeRect(x, centeredY, text.w / scale, lineHeight)];
-    }
+    textRenderer_.draw(frame.texts, scale, NSHeight(self.bounds));
   }
   if (app_->animating()) {
     __weak SVView* weakSelf = self;

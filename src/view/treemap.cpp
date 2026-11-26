@@ -59,24 +59,11 @@ void App::State::renderTreemap(const Input& input, Frame& frame, std::vector<Hot
                static_cast<double>(mapW), static_cast<double>(std::max(0, mapH - rootTitleH))};
     const int labelFont = std::max(9, scaled(input.dpi, 10)), compactFont = std::max(8, scaled(input.dpi, 8));
     const double minW = compactFont * 2 + 4, minH = compactFont + 4;
-    std::vector<uint64_t> layoutVisible = visibleForLayout(*s.shown, s.visible, s.options.showUnknown);
-    RectF contentArea = area;
-    double freeWidth = 0;
-    if (s.options.showFree && s.view == 0 && s.shown->freeBytes) {
-      double used = layoutVisible.empty() ? 0 : static_cast<double>(layoutVisible[0]);
-      freeWidth = area.w * (static_cast<double>(s.shown->freeBytes) / (used + s.shown->freeBytes));
-      if (freeWidth < minW) freeWidth = 0;
-      contentArea.w -= freeWidth;
-    }
-    std::vector<Tile> laid = layoutTreemap(*s.shown, layoutVisible, s.view, contentArea,
-                                          titlePx, minW, minH, s.expanded, s.options.detail);
-    if (freeWidth >= minW) {
-      Tile free;
-      free.flags = kFree; free.category = CatFree; free.size = s.shown->freeBytes;
-      free.outer = {area.x + contentArea.w, area.y, freeWidth, area.h};
-      laid.push_back(free);
-    }
-    s.motion.setTarget(laid, input.timeSec, s.view, area, s.snapLayout);
+    bool layoutChanged = false;
+    const auto& laid = s.layoutCache.get(s.shown, s.visible, s.visibleRevision, s.view, area,
+                                         titlePx, minW, minH, s.expanded, s.options, layoutChanged);
+    if (layoutChanged || s.snapLayout)
+      s.motion.setTarget(laid, input.timeSec, s.view, area, s.snapLayout);
     s.snapLayout = false;
     s.tiles = s.motion.sample(input.timeSec);
     s.frameAnim = s.motion.running(input.timeSec);

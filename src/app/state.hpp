@@ -5,6 +5,7 @@
 #include "model/filter.hpp"
 #include "scan/scanner.hpp"
 #include "view/motion.hpp"
+#include "view/layout_cache.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -26,6 +27,7 @@ struct App::State {
   std::vector<HotRect> hots;
   std::vector<Tile> tiles;
   TileMotion motion;
+  TreemapLayoutCache layoutCache;
   bool frameAnim = false;
   ViewOptions options;
   bool archived = false;
@@ -50,6 +52,7 @@ struct App::State {
   bool lastZoom = false;
   std::shared_ptr<const TreeSnapshot> shown;
   std::vector<uint64_t> visible;
+  uint64_t visibleRevision = 0;
   const TreeSnapshot* visibleKey = nullptr;
   std::string visibleInc, visibleExc;
   uint64_t visibleMin = 0;
