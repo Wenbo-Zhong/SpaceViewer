@@ -76,9 +76,15 @@ void App::State::renderTreemap(const Input& input, Frame& frame, std::vector<Hot
       else ++it;
     }
     s.frameAnim = s.frameAnim || !s.changes.empty();
+#if defined(__APPLE__)
+    // AppKit consumes CPU pixels. Filling them directly avoids synchronous
+    // full-frame OpenCL uploads and readbacks, including on unified memory.
+    const bool gpu = false;
+#else
     // Overlapping navigation layers must paint each fill with its border.
     const bool layered = std::any_of(s.tiles.begin(), s.tiles.end(), [](const Tile& tile) { return tile.exiting; });
     const bool gpu = !layered && openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, 1, s.options.fileGroups);
+#endif
     int hoverTile = -1;
     for (int i = 0; i < static_cast<int>(s.tiles.size()); ++i) {
       const Tile& tile = s.tiles[static_cast<size_t>(i)];
