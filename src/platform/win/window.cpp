@@ -1,4 +1,5 @@
 #include "app/app.hpp"
+#include "i18n/format.hpp"
 #include "i18n/text.hpp"
 #include "i18n/unicode.hpp"
 #include "platform/win/encoding.hpp"
