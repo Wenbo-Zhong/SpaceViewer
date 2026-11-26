@@ -4,6 +4,7 @@ const std::vector<Tile>& TreemapLayoutCache::get(
     const std::shared_ptr<const TreeSnapshot>& tree, const std::vector<uint64_t>& visible,
     uint64_t visibleRevision, uint32_t root, RectF area, double titlePx, double minW, double minH,
     const std::vector<uint32_t>& expanded, const ViewOptions& options, bool& changed) {
+  // 大小输入变化才重建隐藏未知空间后的数组；窗口、展开路径等变化只重新布局。
   const bool sizesChanged = tree_ != tree || visibleRevision_ != visibleRevision ||
                             showUnknown_ != options.showUnknown;
   changed = sizesChanged || !valid_ || root_ != root || area_.x != area.x || area_.y != area.y ||
@@ -12,7 +13,7 @@ const std::vector<Tile>& TreemapLayoutCache::get(
             showFree_ != options.showFree;
   if (!changed) return tiles_;
   if (sizesChanged) {
-    tree_ = tree;  // Retain identity even if the scanner replaces its snapshot.
+    tree_ = tree;  // 持有旧快照，避免其释放后地址复用导致身份判断误命中。
     visibleRevision_ = visibleRevision;
     showUnknown_ = options.showUnknown;
     adjustedVisible_ = tree && !showUnknown_ ? visibleForLayout(*tree, visible, false)

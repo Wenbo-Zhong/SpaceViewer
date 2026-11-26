@@ -14,6 +14,7 @@ void Scanner::Impl::watch() {
   if (fd < 0) return;
   std::unordered_map<int, uint32_t> watchOf;
   auto arm = [&](uint32_t id, const std::string& path) {
+    // 本地监听上限用于约束内核资源；覆盖不完整时标记 watchGap，UI 会提示手动重扫。
     if (watchOf.size() >= 4096) {
       std::lock_guard<std::mutex> lock(treeMu);
       live.watchGap = true;
@@ -66,6 +67,7 @@ void Scanner::Impl::watch() {
       auto* ev = reinterpret_cast<inotify_event*>(buffer.data() + offset);
       offset += static_cast<int>(sizeof(inotify_event) + ev->len);
       if (ev->mask & IN_Q_OVERFLOW) {
+        // 队列溢出意味着存在未处理的变更，当前树需由后续完整重扫重新校准。
         std::lock_guard<std::mutex> lock(treeMu);
         live.watchGap = true;
         continue;

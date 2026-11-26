@@ -27,6 +27,7 @@ bool Scanner::Impl::initializeRoot(const std::string& root) {
     return false;
   }
 #if defined(__linux__)
+  // 扫描 / 时限制在根设备内；挂载点保留为目录，但不递归或统计其他设备上的文件。
   stayOnRootDevice = root == "/";
   rootDevice = st.st_dev;
 #endif
@@ -68,6 +69,7 @@ std::vector<Scanner::Impl::ScanTask> Scanner::Impl::scanOne(const ScanTask& task
   publish(false);
   DIR* directory = opendir(path.c_str());
   if (!directory) {
+    // 权限失败同时计入总错误和权限错误，继续扫描其他目录，交由 UI 在结束后提示授权。
     const int openError = errno;
     std::lock_guard<std::mutex> lock(treeMu);
     live.errors++;
@@ -82,6 +84,7 @@ std::vector<Scanner::Impl::ScanTask> Scanner::Impl::scanOne(const ScanTask& task
     if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
     std::string full = spaceviewer::scan::joinPath(path, name, '/');
     struct stat st;
+    // 枚举子项使用 lstat，跳过符号链接本身及其目标，避免循环遍历和重复统计。
     if (lstat(full.c_str(), &st) != 0) {
       const int statError = errno;
       std::lock_guard<std::mutex> lock(treeMu);
@@ -102,6 +105,7 @@ std::vector<Scanner::Impl::ScanTask> Scanner::Impl::scanOne(const ScanTask& task
 #if defined(__linux__)
       if (stayOnRootDevice && st.st_dev != rootDevice) continue;
 #endif
+      // 使用逻辑文件长度，与 Windows 枚举保持一致，不以 st_blocks 估算实际分配空间。
       item.size = static_cast<uint64_t>(st.st_size);
       item.category = categoryFromName(item.name);
     } else {

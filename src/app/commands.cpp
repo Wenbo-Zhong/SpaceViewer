@@ -4,6 +4,7 @@
 
 #include <algorithm>
 
+// 键盘、工具栏和原生命令共用此入口，新增通用动作时保持各入口行为一致。
 void App::State::execute(HotKind kind, const Host& host, double now) {
   switch (kind) {
     case HotKind::Open:
@@ -49,6 +50,7 @@ void App::State::execute(HotKind kind, const Host& host, double now) {
         std::string dest;
         if (host.pickSave(dest)) {
           if (exportThread.joinable()) exportThread.join();
+          // 固定导出启动时的快照、过滤条件和根节点，任务期间导航或重扫不改变导出内容。
           auto snap = shown;
           Filter exportFilter = filter;
           uint32_t root = view;

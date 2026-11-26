@@ -59,6 +59,7 @@ bool passNameFilter(std::string_view name, const Filter& filter) {
 std::vector<uint64_t> computeVisible(const TreeSnapshot& tree, const Filter& filter) {
   const size_t n = tree.nodes.size();
   std::vector<uint64_t> vis(n, 0);
+  // addNode 保证父节点先于子节点，逆序遍历可先算文件，再汇总目录，无需递归整棵树。
   for (size_t i = n; i-- > 0;) {
     const Node& node = tree.nodes[i];
     if (node.flags & kFree) {
@@ -72,6 +73,7 @@ std::vector<uint64_t> computeVisible(const TreeSnapshot& tree, const Filter& fil
       continue;
     }
     if (node.flags & kDir) {
+      // 包含规则和最小大小筛选文件；排除目录时在该目录处阻断向祖先汇总的整条分支。
       bool excluded = false;
       if (i != 0) {
         for (const auto& g : filter.excludeGlobs) {

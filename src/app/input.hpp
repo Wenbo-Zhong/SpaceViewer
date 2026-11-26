@@ -2,12 +2,13 @@
 
 #include <string>
 
+// 宿主将系统事件转换为共享输入；窗口尺寸和鼠标坐标均使用物理像素。
 struct Input {
   int windowW = 0;
   int windowH = 0;
   float dpi = 96.f;
 #if defined(__linux__)
-  // View density and desktop control sizes may differ on Linux.
+  // Linux 的内容密度与桌面控件尺寸可能不同，控件优先使用独立的 chromeDpi。
   float chromeDpi = 0.f;
 #endif
   float controlDpi() const {
@@ -44,6 +45,6 @@ struct Input {
   std::string typed;
   double timeSec = 0;
 
-  // Consume one-frame events without resetting persistent device state.
+  // 每次 update 后消费一次性事件，保留窗口尺寸、鼠标位置和修饰键等持续状态。
   void clearEdges();
 };

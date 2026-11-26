@@ -77,15 +77,14 @@ void App::State::renderTreemap(const Input& input, Frame& frame, std::vector<Hot
     }
     s.frameAnim = s.frameAnim || !s.changes.empty();
 #if defined(__APPLE__)
-    // AppKit consumes CPU pixels. Filling them directly avoids synchronous
-    // full-frame OpenCL uploads/readbacks. Keep the existing batch eligibility
-    // and border ordering; overlapping navigation layers paint individually.
+    // macOS 显示链路直接使用 CPU 像素，批量填充可避免 OpenCL 的整帧上传与读回。
+    // 导航动画期间可能存在重叠图块，需逐块绘制，保留填充与边框的原有顺序。
     const bool layered = std::any_of(s.tiles.begin(), s.tiles.end(), [](const Tile& tile) { return tile.exiting; });
     const bool prefilled = !layered && mapW >= 64 && mapH >= 64 && s.tiles.size() >= 24;
     if (prefilled)
       fillTilePixels(frame, s.tiles, mapX, mapY, mapW, mapH, 1, s.options.fileGroups);
 #else
-    // Overlapping navigation layers must paint each fill with its border.
+    // 重叠的导航图层必须逐块绘制填充和边框，不能先统一填充再绘制所有边框。
     const bool layered = std::any_of(s.tiles.begin(), s.tiles.end(), [](const Tile& tile) { return tile.exiting; });
     const bool prefilled = !layered && openclFillTiles(frame, s.tiles, mapX, mapY, mapW, mapH, 1, s.options.fileGroups);
 #endif

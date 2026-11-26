@@ -26,6 +26,7 @@ void Scanner::Impl::watch() {
   }
   std::vector<char> buffer(64 * 1024);
 
+  // 按 Windows 的大小写不敏感规则匹配现有节点，避免仅名称大小写变化产生重复节点。
   auto sameName = [](std::string_view utf8, const std::wstring& wide) {
     std::wstring other = utf8ToWide(std::string(utf8));
     return CompareStringOrdinal(other.c_str(), static_cast<int>(other.size()), wide.c_str(),
@@ -116,6 +117,7 @@ void Scanner::Impl::watch() {
       std::wstring rel;
     };
     std::vector<Ev> events;
+    // 先复制通知及 UTF-16 名称，重新挂起监听后 buffer 可能被系统写入下一批事件。
     auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buffer.data());
     for (;;) {
       Ev ev;
@@ -126,7 +128,7 @@ void Scanner::Impl::watch() {
       info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(reinterpret_cast<char*>(info) + info->NextEntryOffset);
     }
 
-    // Re-arm before inspecting files so subsequent writes retain size notifications.
+    // 检查磁盘前立即挂起下一次监听，让后续写入仍能产生大小变更通知。
     armed = arm();
     batchChanged = false;
     for (const Ev& ev : events) {

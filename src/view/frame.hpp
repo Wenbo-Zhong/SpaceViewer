@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+// 共享绘制输出：不透明 BGRA 位图与 UTF-8 文字指令，坐标和字号使用物理像素。
+// 宿主先呈现位图，再用原生文字接口绘制 texts；可跨帧复用此对象的缓冲区。
 struct Frame {
   int width = 0;
   int height = 0;

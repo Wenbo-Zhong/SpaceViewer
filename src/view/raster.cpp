@@ -5,6 +5,7 @@
 #include <cmath>
 
 void Frame::resize(int w, int h, uint32_t clear) {
+  // 容量足够时复用像素存储，但每帧仍清底色和文字指令，避免残留上一帧内容。
   width = std::clamp(w, 1, 8192);
   height = std::clamp(h, 1, 8192);
   bgra.assign(static_cast<size_t>(width) * static_cast<size_t>(height), packRgb(clear));

@@ -8,6 +8,7 @@ using spaceviewer::scan::countSubtree;
 Scanner::Impl::~Impl() { join(); }
 
 void Scanner::Impl::join() {
+  // 等待协调线程及其目录任务、系统监听退出，再清除取消标记供下一次扫描使用。
   cancel = true;
   if (worker.joinable()) worker.join();
   cancel = false;
@@ -19,6 +20,7 @@ void Scanner::Impl::fire() {
     std::lock_guard<std::mutex> lock(wakeMu);
     callback = wake;
   }
+  // 调用前释放 wakeMu，宿主回调只能发送刷新通知，不应同步启动或发布扫描。
   if (callback) callback();
 }
 
@@ -26,11 +28,13 @@ void Scanner::Impl::publish(bool force) {
   std::lock_guard<std::mutex> publishLock(publishMu);
   auto now = std::chrono::steady_clock::now();
 #if defined(__APPLE__)
+  // 大型 macOS 扫描采用较低发布频率，减少整树复制和 UI 同步的开销。
   constexpr auto publishInterval = std::chrono::milliseconds(1000);
 #else
   constexpr auto publishInterval = std::chrono::milliseconds(250);
 #endif
   if (!force && lastPub.time_since_epoch().count() != 0 && now - lastPub < publishInterval) return;
+  // 在树锁内取得一致副本，再替换发布指针；UI 持有的旧快照不受后续写入影响。
   auto snap = std::make_shared<TreeSnapshot>();
   {
     std::lock_guard<std::mutex> lock(treeMu);
@@ -67,6 +71,7 @@ void Scanner::Impl::threadMain() {
   }
   runningFlag = false;
   publish(true);
+  // 正常完成后转入监听；取消扫描时保留已统计结果并退出，不启动监听。
   if (!cancel.load()) watch();
 }
 
@@ -120,6 +125,8 @@ void Scanner::refreshSubtree(uint32_t index) {
     std::lock_guard<std::mutex> lock(impl->treeMu);
     uint64_t files = 0, dirs = 0;
     countSubtree(impl->live, index, files, dirs);
+    // 先撤销旧子树的大小与计数，保留刷新目录本身，再断开旧子节点链。
+    // 节点数组不压缩，使其他目录及 UI 已有的节点编号保持稳定。
     bubble(impl->live, index, -static_cast<int64_t>(impl->live.nodes[index].size));
     impl->live.files -= std::min(files, impl->live.files);
     impl->live.dirs -= std::min(dirs > 0 ? dirs - 1 : 0, impl->live.dirs);
@@ -139,6 +146,7 @@ void Scanner::refreshSubtree(uint32_t index) {
   impl->lastPub = {};
   impl->publish(true);
   impl->worker = std::thread([this, index, path]() {
+    // 刷新产生的文件大小不再消耗未知空间，避免对同一批文件重复扣减。
     impl->scanParallel(index, path, false);
     {
       std::lock_guard<std::mutex> lock(impl->treeMu);

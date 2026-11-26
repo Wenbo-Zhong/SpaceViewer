@@ -78,8 +78,7 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
         tile.flags = item.flags;
         tile.category = item.category;
         tile.outer = outer;
-        // Mark invalid trial rectangles. layoutDir reduces the item count
-        // and repacks before accepting any final layout.
+        // 标记放不下紧凑文字的试排图块，layoutDir 会减少项目数量并重新铺排。
         tile.hidden = std::floor(outer.w) < minW || std::floor(outer.h) < minH;
         const bool explicitExpand = std::find(expanded.begin(), expanded.end(), item.index) != expanded.end();
         const bool nest = !tile.hidden && (depth < detail || explicitExpand) && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
@@ -100,8 +99,7 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
           for (size_t i = childrenBegin; i < tiles.size(); ++i)
             if (!tiles[i].hidden) { readableChild = true; break; }
           if (!readableChild) {
-            // A title over an unreadable interior is less useful than the
-            // directory's centered name and size. Keep it as a single tile.
+            // 内部没有可读子图块时恢复为单块目录，居中显示名称和大小。
             tiles.resize(childrenBegin);
             tiles[parentPosition].container = false;
             tiles[parentPosition].title.h = 0;
@@ -129,8 +127,7 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
         tile.flags = item.flags;
         tile.category = item.category;
         tile.outer = outer;
-        // Mark invalid trial rectangles. layoutDir reduces the item count
-        // and repacks before accepting any final layout.
+        // 标记放不下紧凑文字的试排图块，layoutDir 会减少项目数量并重新铺排。
         tile.hidden = std::floor(outer.w) < minW || std::floor(outer.h) < minH;
         const bool explicitExpand = std::find(expanded.begin(), expanded.end(), item.index) != expanded.end();
         const bool nest = !tile.hidden && (depth < detail || explicitExpand) && item.mergeCount == 0 && (item.flags & kDir) && item.index != kNone &&
@@ -151,8 +148,7 @@ void emitChildren(const TreeSnapshot& tree, const std::vector<uint64_t>& visible
           for (size_t i = childrenBegin; i < tiles.size(); ++i)
             if (!tiles[i].hidden) { readableChild = true; break; }
           if (!readableChild) {
-            // A title over an unreadable interior is less useful than the
-            // directory's centered name and size. Keep it as a single tile.
+            // 内部没有可读子图块时恢复为单块目录，居中显示名称和大小。
             tiles.resize(childrenBegin);
             tiles[parentPosition].container = false;
             tiles[parentPosition].title.h = 0;
@@ -206,8 +202,8 @@ void layoutDir(const TreeSnapshot& tree, const std::vector<uint64_t>& visible, u
             [](const Child& a, const Child& b) { return a.size > b.size; });
 
   const double pixels = std::max(1.0, area.w * area.h);
-  // Choose readable children before the final layout. Hidden tail entries
-  // must not reserve empty strips: the retained entries tile the whole area.
+  // 先选择可读项目，再按它们的相对大小铺满父区域，省略的尾部项目不预留空白。
+  // 这里只调整显示面积，文件逻辑大小、目录总计与导出数据保持原有含义。
   int limit = std::min(800, static_cast<int>(children.size()));
   limit = std::min(limit, std::max(1, static_cast<int>(pixels / (minW * minH))));
   auto makeItems = [&](int count) {

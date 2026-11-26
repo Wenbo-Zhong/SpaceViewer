@@ -18,16 +18,19 @@ void Scanner::Impl::runTaskPool(const ScanTask& root) {
       ScanTask task{};
       {
         std::unique_lock<std::mutex> lock(taskMu);
+        // 正常完成以 outstandingTasks 归零为准，其他线程可能仍在枚举并生成子任务。
         taskCv.wait(lock, [&]() { return cancel.load() || !taskQueue.empty() || outstandingTasks == 0; });
         if (cancel.load() || (taskQueue.empty() && outstandingTasks == 0)) return;
         if (taskQueue.empty()) continue;
         task = std::move(taskQueue.front());
         taskQueue.pop_front();
       }
+      // 目录读取在队列锁外执行；scanOne 通过批量入树单独管理 treeMu。
       std::vector<ScanTask> children = scanOne(task);
       {
         std::lock_guard<std::mutex> lock(taskMu);
         if (!cancel.load()) {
+          // 先登记新发现的子任务，再扣除当前任务，避免其他线程误判全部完成。
           for (ScanTask& child : children) taskQueue.push_back(std::move(child));
           outstandingTasks += children.size();
         }
@@ -57,6 +60,7 @@ void Scanner::Impl::scanParallel(uint32_t id, const std::string& path, bool char
 }
 
 void Scanner::Impl::scanSerial(uint32_t id, const std::string& path, bool chargePending) {
+  // 监听补扫复用枚举后端，通过显式栈遍历，避免为每个变更再创建一组扫描线程。
   std::vector<ScanTask> stack{ScanTask{id, path, chargePending}};
   while (!stack.empty() && !cancel.load()) {
     ScanTask task = std::move(stack.back());

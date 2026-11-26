@@ -32,6 +32,7 @@ void Scanner::Impl::watch() {
   CFRelease(paths);
   CFRelease(cfPath);
   if (!stream) return;
+  // FSEvents 回调在扫描协调线程的 RunLoop 上处理，系统资源退出监听后统一释放。
   FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
   FSEventStreamStart(stream);
   while (!cancel.load()) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, true);
@@ -53,6 +54,7 @@ void Scanner::Impl::reconcileApple(const std::string& root, char** paths, size_t
     while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
     if (rel.empty()) continue;
     struct stat st;
+    // 通知只提供变更路径，按当前文件状态校准树；路径已删除或变成符号链接时移除旧节点。
     bool gone = lstat(full.c_str(), &st) != 0 || S_ISLNK(st.st_mode);
     std::string parentRel;
     std::string leaf = rel;
@@ -61,6 +63,7 @@ void Scanner::Impl::reconcileApple(const std::string& root, char** paths, size_t
       parentRel = rel.substr(0, slash);
       leaf = rel.substr(slash + 1);
     }
+    // 查找直接读取工作树，以下所有调用都须位于 treeMu 的保护范围内。
     auto locate = [&](const std::string& relative) -> uint32_t {
       uint32_t id = 0;
       size_t i = 0;
@@ -126,6 +129,7 @@ void Scanner::Impl::reconcileApple(const std::string& root, char** paths, size_t
         live.dirs++;
         live.changed.push_back(id);
       }
+      // 新目录的磁盘读取在树锁外进行，补扫不再扣减初次扫描的未知空间。
       scanSerial(id, full, false);
     } else if (S_ISREG(st.st_mode)) {
       std::lock_guard<std::mutex> lock(treeMu);

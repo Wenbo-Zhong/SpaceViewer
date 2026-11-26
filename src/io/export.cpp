@@ -120,6 +120,7 @@ bool writeSnapshot(const TreeSnapshot& tree, const std::string& path, std::strin
   std::ofstream out(std::filesystem::u8path(path), std::ios::binary);
   if (!out) { error = "Cannot create snapshot"; return false; }
   std::vector<uint32_t> ids;
+  // 工作树中的删除只断开链接，保存时仅遍历根下可达节点并重新编号，排除已脱离的旧子树。
   std::vector<uint32_t> remap(tree.nodes.size(), kNone);
   if (!tree.nodes.empty()) { ids.push_back(0); remap[0] = 0; }
   for (size_t cursor = 0; cursor < ids.size(); ++cursor) {
@@ -162,6 +163,7 @@ bool readSnapshot(const std::string& path, TreeSnapshot& tree, std::string& erro
     error = "Invalid snapshot header"; return false;
   }
   loaded.sep = static_cast<char>(sep);
+  // 文件格式要求父节点先出现且必须为目录，与 addNode 的编号及过滤汇总约束一致。
   for (uint64_t i = 0; i < count; ++i) {
     uint32_t parent; uint64_t size; int flags, category; std::string name;
     if (!(in >> parent >> size >> flags >> category >> std::quoted(name)) ||

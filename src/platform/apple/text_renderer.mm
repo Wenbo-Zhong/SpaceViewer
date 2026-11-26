@@ -43,6 +43,7 @@ struct TextRenderer::Impl {
   void configure(double nextScale) {
     auto nextLanguage = zh::language();
     if (scale == nextScale && language == nextLanguage) return;
+    // 缩放改变像素到字号的换算，语言改变中文字体选择，两者变化都须清空排版缓存。
     entries.clear(); index.clear(); fonts.clear(); cost = 0;
     scale = nextScale; language = nextLanguage;
   }
@@ -90,19 +91,20 @@ struct TextRenderer::Impl {
     }
     entry.key = std::move(key);
     entry.text = [attributed copy];
-    // Preserve AppKit's complete line box, including descenders and fallback fonts.
+    // 保留 AppKit 的完整行框，包含字母下伸部和回退字体高度，避免文字底部被裁切。
     entry.lineHeight = std::ceil([attributed size].height * scale) / scale;
-    // Bound retained text and run overhead as well as the number of labels.
+    // 估算键、文字和属性对象的保留成本，与条目上限共同约束缓存增长。
     entry.cost = entry.key.size() * 2 + string.length * 8 + 256;
     return entry;
   }
 
   const Entry& lookup(const Frame::Text& text, Entry& scratch) {
-    // Geometry stays outside the key: AppKit applies truncation at the current width.
+    // 位置与宽高不参与键，AppKit 在实际绘制宽度处截断，使移动和缩放图块可复用文字。
     std::string key = std::to_string(text.fontPx) + "/" + std::to_string(text.rgb) + "/" +
                       (text.center ? "1/" : "0/") + text.utf8;
     auto found = index.find(key);
     if (found != index.end()) {
+      // 最近使用的条目移到链表头部，超过容量时从尾部淘汰。
       entries.splice(entries.begin(), entries, found->second);
       return *found->second;
     }
@@ -131,6 +133,7 @@ void TextRenderer::draw(const std::vector<Frame::Text>& texts, double scale, dou
     const auto& entry = impl_->lookup(text, scratch);
     if (!entry.text) continue;
     CGFloat x = text.x / scale;
+    // 共享帧以左上角为原点，AppKit 文字坐标以左下角为原点，并使用逻辑点。
     CGFloat y = canvasHeight - (text.y + text.h) / scale;
     CGFloat centeredY = y + (text.h / scale - entry.lineHeight) * 0.5;
     [entry.text drawInRect:NSMakeRect(x, centeredY, text.w / scale, entry.lineHeight)];

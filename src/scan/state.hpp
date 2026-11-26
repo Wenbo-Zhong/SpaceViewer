@@ -23,8 +23,10 @@ void unlinkNode(TreeSnapshot& tree, uint32_t id);
 void countSubtree(const TreeSnapshot& tree, uint32_t id, uint64_t& files, uint64_t& dirs);
 }  // namespace spaceviewer::scan
 
-// Private scanner state shared by the coordinator and native backends.
-// Backend tree mutations hold treeMu; publication retains its original lock order.
+// 协调线程与原生后端共享的内部状态，UI 仅通过 Scanner 的公开接口访问。
+// treeMu 保护 live，pubMu 保护 published，publishMu 串行化发布时机。
+// 发布时持有 publishMu，先获取并释放 treeMu，再获取 pubMu；持有 treeMu 时不得调用 publish。
+// wakeMu 仅保护通知回调，taskMu 保护任务队列和 outstandingTasks。
 struct Scanner::Impl {
   std::mutex treeMu;
   std::mutex pubMu;
@@ -35,6 +37,7 @@ struct Scanner::Impl {
   struct ScanTask {
     uint32_t node;
     std::string path;
+    // 初次扫描从未知空间扣减；子树刷新和监听补扫只累计实际大小。
     bool chargePending;
   };
   struct Entry {
@@ -46,6 +49,7 @@ struct Scanner::Impl {
     std::string path;
   };
   std::deque<ScanTask> taskQueue;
+  // 同时包含排队及正在执行的目录任务；队列暂空并不代表整次扫描结束。
   size_t outstandingTasks = 0;
   TreeSnapshot live;
   std::shared_ptr<const TreeSnapshot> published = std::make_shared<TreeSnapshot>();
@@ -73,7 +77,7 @@ struct Scanner::Impl {
   uint32_t removeNode(uint32_t id);
   void initializeVolume(uint64_t capacity, uint64_t available);
 
-  // Exactly one enumeration backend and one watcher backend are linked per host.
+  // 每个平台仅链接一套目录枚举后端和一套监听后端，共用上层任务池与树更新逻辑。
   static void lowerThreadPriority();
   bool initializeRoot(const std::string& root);
   std::vector<ScanTask> scanOne(const ScanTask& task);

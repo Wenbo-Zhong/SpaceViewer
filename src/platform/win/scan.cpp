@@ -14,6 +14,7 @@ std::wstring joinWide(const std::wstring& dir, const std::wstring& name) {
 }
 
 std::wstring extendedPath(const std::wstring& path) {
+  // 扫描使用 Win32 长路径前缀；UNC 路径须保留网络共享形式，不能直接拼接普通前缀。
   if (path.rfind(L"\\\\?\\", 0) == 0) return path;
   if (path.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC\\" + path.substr(2);
   return L"\\\\?\\" + path;
@@ -111,6 +112,7 @@ std::vector<Scanner::Impl::ScanTask> Scanner::Impl::scanOne(const ScanTask& task
     if (cancel) break;
     const wchar_t* name = data.cFileName;
     if (name[0] == L'.' && (name[1] == 0 || (name[1] == L'.' && name[2] == 0))) continue;
+    // 跳过重解析点，包括目录联接和符号链接，避免循环及同一目标的重复计数。
     if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
     Entry item;
     item.name = wideToUtf8(name);

@@ -49,6 +49,7 @@ void accountBytes(TreeSnapshot& tree, uint32_t dir, uint64_t bytes) {
     i = tree.nodes[i].parent;
   }
   if (tree.pending != kNone && tree.pending < tree.nodes.size()) {
+    // 文件大小已向祖先累加，再从未知空间及根总量扣除相同部分，避免重复统计已用空间。
     uint64_t have = tree.nodes[tree.pending].size;
     uint64_t dec = bytes < have ? bytes : have;
     tree.nodes[tree.pending].size = have - dec;

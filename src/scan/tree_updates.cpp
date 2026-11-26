@@ -30,6 +30,7 @@ void bubble(TreeSnapshot& tree, uint32_t start, int64_t delta) {
 }
 
 void unlinkNode(TreeSnapshot& tree, uint32_t id) {
+  // 删除仅修改父子和兄弟链接，保留数组位置；压缩数组会使 UI 的节点编号失效。
   if (id >= tree.nodes.size()) return;
   uint32_t parent = tree.nodes[id].parent;
   if (parent == kNone || parent >= tree.nodes.size()) return;
@@ -65,6 +66,7 @@ void countSubtree(const TreeSnapshot& tree, uint32_t id, uint64_t& files, uint64
 void Scanner::Impl::flushBatch(uint32_t id, bool chargePending, std::vector<Entry>& batch,
                               std::vector<ScanTask>& children) {
   if (batch.empty()) return;
+  // 文件元数据已在锁外读取，此处一次提交一批节点并汇总大小，减少逐文件争锁。
   std::lock_guard<std::mutex> lock(treeMu);
   uint64_t sum = 0;
   for (const Entry& item : batch) {
@@ -85,6 +87,7 @@ void Scanner::Impl::flushBatch(uint32_t id, bool chargePending, std::vector<Entr
   batch.clear();
 }
 
+// 调用者须持有 treeMu；删除整条可达子树后返回父节点，供监听变更高亮使用。
 uint32_t Scanner::Impl::removeNode(uint32_t id) {
   uint64_t files = 0, dirs = 0;
   spaceviewer::scan::countSubtree(live, id, files, dirs);
@@ -100,6 +103,7 @@ uint32_t Scanner::Impl::removeNode(uint32_t id) {
 void Scanner::Impl::initializeVolume(uint64_t capacity, uint64_t available) {
   std::lock_guard<std::mutex> lock(treeMu);
   uint64_t freeBytes = std::min(available, capacity);
+  // 先把已用空间归入未知节点，初次扫描发现文件后由 accountBytes 逐步转出。
   uint64_t unknown = capacity - freeBytes;
   live.capacity = capacity;
   live.freeBytes = freeBytes;

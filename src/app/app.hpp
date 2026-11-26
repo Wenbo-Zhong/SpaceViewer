@@ -8,14 +8,17 @@
 
 #include <string>
 
+// 跨平台应用核心，由宿主 UI 线程驱动；系统窗口、对话框和剪贴板通过 Host 接入。
 class App {
  public:
   App();
   ~App();
 
+  // 扫描和导出线程都可能触发此回调，宿主应将重绘请求调度到自己的 UI 线程。
   void setWake(std::function<void()> wake);
   void scanPath(const std::string& path);
   void requestStop();
+  // 消费本帧输入并生成绘制数据；返回后宿主即可清理 Input 的一次性事件。
   void update(const Input& input, const Host& host, Frame& frame);
   bool animating() const;
   ViewOptions options() const;

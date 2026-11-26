@@ -7,6 +7,7 @@
 #include <algorithm>
 
 App::State::~State() {
+  // 导出任务捕获了 this，必须等待任务退出后才能销毁提示状态和互斥锁。
   if (exportThread.joinable()) exportThread.join();
 }
 
@@ -63,6 +64,7 @@ Edit* App::State::focusedEdit() {
 void App::State::refreshFilter() {
   filter.includeGlobs = splitList(inc.text);
   filter.excludeGlobs = splitList(exc.text);
+  // 无效输入只标记错误，保留上一次有效阈值，避免输入过程中反复改变过滤结果。
   uint64_t parsed = 0;
   if (min.text.empty()) {
     filter.minSize = 0;
@@ -104,6 +106,7 @@ void App::State::refreshSnapshot(const Host& host) {
     host.permissionWarning(shown->permissionErrors);
   }
   const TreeSnapshot* key = shown.get();
+  // 快照不可变，身份或过滤条件变化时才重新汇总；鼠标移动等重绘可复用结果。
   if (key != visibleKey || inc.text != visibleInc || exc.text != visibleExc ||
       filter.minSize != visibleMin) {
     visible = shown ? computeVisible(*shown, filter) : std::vector<uint64_t>{};
@@ -205,8 +208,8 @@ void App::applyMenu(MenuCommand command, const Host& host) {
 }
 
 void App::update(const Input& input, const Host& host, Frame& frame) {
-  // Events refer to the last presented frame. Publish new hit regions only
-  // after input, snapshot synchronization and drawing have finished.
+  // 输入对应用户刚看到的上一帧，先用其命中区域处理事件，再同步快照并绘制。
+  // 新命中区域随绘制结果一起更新，避免点击被分发给尚未显示的新图块。
   state->handleInput(input, host);
   state->refreshSnapshot(host);
   state->render(input, host, frame);

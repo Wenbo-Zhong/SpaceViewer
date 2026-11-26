@@ -318,6 +318,7 @@ static SVView* gView = nil;
 - (void)drawRect:(NSRect)dirtyRect {
   static dispatch_once_t registerOnce;
   dispatch_once(&registerOnce, ^{ registerBundledFonts(); });
+  // 位图和输入坐标使用 Retina 物理像素，呈现时映射回窗口的逻辑点尺寸。
   CGFloat scale = self.window ? self.window.backingScaleFactor : [[NSScreen mainScreen] backingScaleFactor];
   if (scale < 1) scale = 1;
   NSRect backing = [self convertRectToBacking:self.bounds];
@@ -334,6 +335,7 @@ static SVView* gView = nil;
   if (frame.width > 0 && frame.height > 0 && !frame.bgra.empty()) {
     CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    // provider 借用帧缓冲，完成当前绘制并释放 image/provider 前不能调整缓冲或异步写入。
     CGDataProviderRef provider = CGDataProviderCreateWithData(
         nullptr, frame.bgra.data(), frame.bgra.size() * sizeof(uint32_t), nullptr);
     CGImageRef image = CGImageCreate(frame.width, frame.height, 8, 32, frame.width * 4, space,

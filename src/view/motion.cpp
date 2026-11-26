@@ -43,6 +43,7 @@ RectF clip(RectF rect, RectF viewport) {
 }  // namespace
 
 uint64_t TileMotion::keyOf(const Tile& tile) {
+  // 普通图块以节点编号匹配；虚拟或合并图块使用高位标记，区分两类动画身份。
   if (tile.index != kNone) return tile.index;
   return (1ull << 63) | (static_cast<uint64_t>(tile.parent) << 32) | tile.mergeCount;
 }
@@ -71,6 +72,7 @@ void TileMotion::setTarget(const std::vector<Tile>& target, double now, uint32_t
     }
   }
   if (sameTarget && !changedView) return;
+  // 动画中再次收到目标时，从当前画面继续插值，避免退回上一次动画的起点。
   std::vector<Tile> current = sample(now);
   navigation_ = false;
   zoomOut_ = false;
@@ -167,6 +169,7 @@ std::vector<Tile> TileMotion::sample(double now) const {
       if (drawn.outer.w > 0 && drawn.outer.h > 0) out.push_back(drawn);
     }
   };
+  // 进入目录时先画退场图块，返回时后画；调用方须保留这个覆盖顺序。
   if (navigation_ && !zoomOut_) appendOutgoing();
   for (const Tile& tile : target_) {
     Tile drawn = tile;

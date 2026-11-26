@@ -58,7 +58,7 @@ void App::State::handleInput(const Input& input, const Host& host) {
       s.lastX = input.mouseX;
       s.lastY = input.mouseY;
       if (second) {
-        // A newly revealed child under the cursor does not own the double click.
+        // 首击展开后鼠标下可能出现子节点，双击仍应作用于首击选中的目录。
         if (s.shown && previousSelected < s.shown->nodes.size() &&
             (s.shown->nodes[previousSelected].flags & kDir)) s.navigate(previousSelected);
         s.lastZoom = false;

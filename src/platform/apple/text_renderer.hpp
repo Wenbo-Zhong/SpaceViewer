@@ -6,7 +6,7 @@
 
 namespace spaceviewer::apple {
 
-// AppKit drawing stays on the view's main thread.
+// AppKit 绘制与缓存访问均由视图主线程执行，缓存不提供跨线程同步。
 class TextRenderer {
  public:
   TextRenderer();
@@ -15,6 +15,7 @@ class TextRenderer {
   size_t cachedEntries() const;
   size_t cachedTextCost() const;
 
+  // 同时限制标签数量与估算文本成本；成本不等于原生对象的精确内存占用。
   static constexpr size_t entryLimit = 2048;
   static constexpr size_t textCostLimit = 2 * 1024 * 1024;
 

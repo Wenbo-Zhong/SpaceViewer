@@ -12,6 +12,8 @@
 #include <thread>
 #include <unordered_map>
 
+// UI 状态主要由宿主线程维护；导出线程仅共享结果提示及完成状态。
+// 后台导出线程更新结果提示时持有 noteMu，exportRunning 使用原子状态跨线程通知。
 struct App::State {
   Scanner scanner;
   std::function<void()> wake;
@@ -50,8 +52,10 @@ struct App::State {
   double lastClick = -1;
   int lastX = 0, lastY = 0;
   bool lastZoom = false;
+  // 保留正在展示的不可变快照，使节点编号、可见大小与这一帧的命中区域相互对应。
   std::shared_ptr<const TreeSnapshot> shown;
   std::vector<uint64_t> visible;
+  // 每次重新计算过滤结果都递增，供布局缓存判断可见大小是否已变化。
   uint64_t visibleRevision = 0;
   const TreeSnapshot* visibleKey = nullptr;
   std::string visibleInc, visibleExc;
