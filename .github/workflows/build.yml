@@ -39,11 +39,16 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
           cmake --build build --parallel
           build/SpaceViewer.app/Contents/MacOS/SpaceViewer --self-test
-          ctest --test-dir build -R '^(layout_cache|apple_text_cache|tile_fill)$' --output-on-failure
+          ctest --test-dir build -R '^(layout_cache|apple_text_cache|tile_fill|apple_bundle_signature)$' --output-on-failure
           for file in Inter-Regular.ttf SourceHanSansSC-Regular.otf SourceHanSansTC-Regular.otf Inter-LICENSE.txt SourceHanSans-LICENSE.txt; do
             test -s "build/SpaceViewer.app/Contents/Resources/Fonts/$file"
           done
           ditto -c -k --keepParent build/SpaceViewer.app SpaceViewer-macOS-universal.zip
+          unpacked=$(mktemp -d)
+          trap 'rm -rf "$unpacked"' EXIT
+          ditto -x -k SpaceViewer-macOS-universal.zip "$unpacked"
+          lipo -verify_arch arm64 x86_64 "$unpacked/SpaceViewer.app/Contents/MacOS/SpaceViewer"
+          cmake "-DSPACEVIEWER_APP_BUNDLE=$unpacked/SpaceViewer.app" -P tests/apple_bundle_signature_test.cmake
       - uses: actions/upload-artifact@v4
         with:
           name: SpaceViewer-macOS-universal

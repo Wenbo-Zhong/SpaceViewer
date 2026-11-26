@@ -174,6 +174,21 @@ elseif(APPLE)
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/apple/Info.plist.in")
   target_link_libraries(spaceviewer PRIVATE "-framework Cocoa" "-framework CoreText" "-framework CoreGraphics" "-framework CoreServices")
+  set(SPACEVIEWER_MACOS_SIGNING_IDENTITY "-" CACHE STRING
+    "macOS signing identity (- for ad hoc, or a Developer ID Application identity)")
+  if(SPACEVIEWER_MACOS_SIGNING_IDENTITY STREQUAL "")
+    message(FATAL_ERROR "SPACEVIEWER_MACOS_SIGNING_IDENTITY must not be empty")
+  endif()
+  find_program(SPACEVIEWER_CODESIGN codesign REQUIRED)
+  # Run after bundle resources are copied, including builds that do not relink.
+  add_custom_target(spaceviewer_sign ALL
+    COMMAND "${SPACEVIEWER_CODESIGN}" --force --sign "${SPACEVIEWER_MACOS_SIGNING_IDENTITY}"
+      "$<TARGET_BUNDLE_DIR:spaceviewer>"
+    COMMAND "${SPACEVIEWER_CODESIGN}" --verify --strict --all-architectures
+      "$<TARGET_BUNDLE_DIR:spaceviewer>"
+    DEPENDS spaceviewer
+    COMMENT "Sign and verify the complete macOS application bundle"
+    VERBATIM)
 else()
   target_sources(spaceviewer PRIVATE
     src/platform/linux/main.cpp
@@ -245,6 +260,11 @@ if(BUILD_TESTING)
   target_link_libraries(spaceviewer_layout_tests PRIVATE spaceviewer_core)
   add_test(NAME layout_cache COMMAND spaceviewer_layout_tests)
   if(APPLE)
+    if(SPACEVIEWER_BUILD_APP)
+      add_test(NAME apple_bundle_signature
+        COMMAND "${CMAKE_COMMAND}" "-DSPACEVIEWER_APP_BUNDLE=$<TARGET_BUNDLE_DIR:spaceviewer>"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/apple_bundle_signature_test.cmake")
+    endif()
     add_executable(spaceviewer_text_tests tests/apple_text_renderer_test.mm)
     set_source_files_properties(tests/apple_text_renderer_test.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(spaceviewer_text_tests PRIVATE spaceviewer_apple_text)

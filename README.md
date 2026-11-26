@@ -137,6 +137,8 @@ open build/SpaceViewer.app
 
 或 `sh build-macos.sh`，生成 `build/SpaceViewer.app`。首次启动可选扫描整个启动磁盘，也可选其他磁盘或文件夹。扫描器最多用 8 个线程并发读取目录。Windows 磁盘扫描显示按容量估算的百分比；macOS 扫描期间显示活动进度条和文件读取速度，完成后进度条填满，不显示估算百分比。访问桌面、文稿、下载目录或外接磁盘时，macOS 会按需显示授权提示。若扫描时遇到系统保护的目录，应用会提示到“系统设置 > 隐私与安全性 > 完全磁盘访问”手动授权，再重新扫描。macOS 不允许应用自行开启完全磁盘访问。Retina 屏使用窗口的 `backingScaleFactor`，位图按物理像素绘制。
 
+macOS 构建会在资源装配完成后签名并校验整个 `.app`，确保隐私授权使用的代码身份有效；仅构建签名后的应用可用 `cmake --build build --target spaceviewer_sign`。默认使用 ad hoc 签名，更换版本后可能需要重新授权。若有 Developer ID Application 证书，可在配置时传入 `-DSPACEVIEWER_MACOS_SIGNING_IDENTITY="Developer ID Application: 名称 (TEAMID)"`；持续使用同一开发者身份签名，才能让系统在版本更新后继续识别应用身份。流水线还会校验压缩包解压后的签名及两个架构的身份要求。
+
 ## 许可
 
 Copyright (C) 2026 Wenbo Zhong
