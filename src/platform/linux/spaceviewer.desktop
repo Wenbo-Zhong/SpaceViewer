@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SpaceViewer
+Comment=Explore disk usage with an interactive treemap
+Exec=spaceviewer %f
+Icon=spaceviewer
+Terminal=false
+Categories=Utility;System;
+StartupNotify=true

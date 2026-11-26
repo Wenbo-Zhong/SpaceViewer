@@ -55,11 +55,11 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxft-dev libwayland-dev wayland-protocols libxkbcommon-dev libfontconfig1-dev libfreetype-dev
-      - name: Build and package Linux x64
+          sudo apt-get install -y libx11-dev libxft-dev libwayland-dev wayland-protocols libxkbcommon-dev libfontconfig1-dev libfreetype-dev curl desktop-file-utils
+      - name: Build and test Linux x64 AppImage
         run: sh package-linux.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: SpaceViewer-Linux-x64
-          path: out/*.tar.gz
+          name: SpaceViewer-Linux-x64-AppImage
+          path: out/SpaceViewer-x86_64.AppImage
           if-no-files-found: error

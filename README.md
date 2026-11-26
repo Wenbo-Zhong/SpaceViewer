@@ -2,7 +2,7 @@
 
 跨平台磁盘占用查看器，交互方式和 SpaceSniffer 同一类：矩形树图按文件和文件夹的大小占面积，扫描过程中图形会增长，点击文件夹进入，可以按名称过滤、查看详情、打开文件并导出 CSV。
 
-界面默认使用随程序打包的 Inter（拉丁文字）和思源黑体（简体或繁体中文）。字体及许可证位于 `assets/fonts/`；Windows 将字体和许可证嵌入 EXE，macOS 放入 .app，Linux 分发包包含程序与字体。
+界面默认使用随程序打包的 Inter（拉丁文字）和思源黑体（简体或繁体中文）。字体及许可证位于 `assets/fonts/`；Windows 将字体和许可证嵌入 EXE，macOS 放入 .app，Linux 放入单文件 AppImage。
 
 界面语言会按系统语言自动选择简体中文、繁体中文或英文；其他系统语言默认显示英文。文案位于 [`locales/`](locales/README.md)，新增语言可通过提交 `locales/<BCP-47>/strings.json` 参与翻译。
 
@@ -105,15 +105,25 @@ cmake --build build
 
 也可以 `sh build-linux.sh`。选择文件夹需要 `zenity` 或 `kdialog`；没有这两个程序时，在路径栏输入路径后回车。X11 高分屏请让 `Xft.dpi` 等于实际 DPI。Wayland 使用输出的整数缩放，界面按物理像素绘制。
 
-生成包含程序和字体的分发包（安装上述编译依赖后）：
+生成包含程序、字体和随包依赖的 AppImage（安装上述编译依赖后）：
 
 ```sh
+sudo apt install curl desktop-file-utils
 sh package-linux.sh
 ```
 
-输出为 `out/SpaceViewer-ubuntu-x86_64.tar.gz`（ARM64 上为 `aarch64`）。解压后运行包内的 `spaceviewer`，并保留包内的 `fonts/`。程序使用系统提供的 X11、Wayland、Fontconfig、FreeType 和 C++ 运行库。
+输出为 `out/SpaceViewer-x86_64.AppImage`（ARM64 上为 `SpaceViewer-aarch64.AppImage`）。打包脚本固定 linuxdeploy 版本并校验 SHA-256，运行 CTest、成品 AppImage 自检，并核对包内字体和许可证。
 
-GitHub Actions 在推送、拉取请求或手动触发时构建三平台产物。可从对应运行记录的 Artifacts 下载 Windows x64 单文件 EXE、macOS 通用 .app 压缩包及 Ubuntu x64 tar.gz。CMake 构建需要 3.24 或更新版本。
+下载后赋予执行权限即可启动：
+
+```sh
+chmod +x SpaceViewer-x86_64.AppImage
+./SpaceViewer-x86_64.AppImage
+```
+
+系统无法挂载 AppImage 时，可以执行 `APPIMAGE_EXTRACT_AND_RUN=1 ./SpaceViewer-x86_64.AppImage`，通过临时解包运行。桌面环境、显卡驱动、文件选择器和 `pkexec` 仍由系统提供。流水线在 Ubuntu 24.04 构建与验证，不保证较老发行版兼容。
+
+GitHub Actions 在推送、拉取请求或手动触发时构建三平台产物。可从对应运行记录的 Artifacts 下载 Windows x64 单文件 EXE、macOS 通用 .app 压缩包及 Linux x64 AppImage；Linux 仅上传 AppImage。CMake 构建需要 3.24 或更新版本。
 
 ## macOS
 
