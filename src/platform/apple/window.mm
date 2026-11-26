@@ -1,12 +1,13 @@
-#include "app.hpp"
-#include "text.hpp"
+#include "app/app.hpp"
+#include "i18n/text.hpp"
+#include "i18n/unicode.hpp"
+#include "platform/posix/volume.hpp"
 
 #import <Cocoa/Cocoa.h>
 #import <CoreText/CoreText.h>
 
 #include <dirent.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 
 #include <cmath>
 #include <string>
@@ -14,13 +15,6 @@
 #include <cstdlib>
 
 namespace {
-
-bool isChinese(uint32_t cp) {
-  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
-         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
-         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
-         (cp >= 0xFF00 && cp <= 0xFFEF);
-}
 
 NSString* bundledCjkFontName() {
   return zh::language() == zh::Language::TraditionalChinese ? @"Source Han Sans TC" : @"Source Han Sans SC";
@@ -35,29 +29,8 @@ void registerBundledFonts() {
   }
 }
 
-bool isMount(const std::string& path) {
-  if (path == "/") return true;
-  struct stat self;
-  struct stat parent;
-  if (stat(path.c_str(), &self) != 0) return false;
-  if (stat((path + "/..").c_str(), &parent) != 0) return false;
-  return self.st_dev != parent.st_dev;
-}
-
-void addVolume(std::vector<VolumeEntry>& out, const std::string& path, const std::string& label) {
-  for (const VolumeEntry& existing : out) {
-    if (existing.path == path) return;
-  }
-  VolumeEntry entry;
-  entry.path = path;
-  entry.label = label.empty() ? path : label;
-  struct statvfs vfs;
-  if (statvfs(path.c_str(), &vfs) == 0) {
-    entry.total = static_cast<uint64_t>(vfs.f_blocks) * static_cast<uint64_t>(vfs.f_frsize);
-    entry.free = static_cast<uint64_t>(vfs.f_bavail) * static_cast<uint64_t>(vfs.f_frsize);
-  }
-  out.push_back(entry);
-}
+using spaceviewer::posix::addVolume;
+using spaceviewer::posix::isVolumeRoot;
 
 void addMounts(std::vector<VolumeEntry>& out, const std::string& directory) {
   DIR* dir = opendir(directory.c_str());
@@ -67,7 +40,7 @@ void addMounts(std::vector<VolumeEntry>& out, const std::string& directory) {
     std::string path = directory + "/" + entry->d_name;
     struct stat st;
     if (stat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-    if (isMount(path)) addVolume(out, path, entry->d_name);
+    if (isVolumeRoot(path)) addVolume(out, path, entry->d_name);
   }
   closedir(dir);
 }
@@ -78,29 +51,6 @@ std::vector<VolumeEntry> listVolumes() {
   if (const char* home = std::getenv("HOME")) addVolume(out, home, zh::homeFolder());
   addMounts(out, "/Volumes");
   return out;
-}
-
-void clearEdges(Input& input) {
-  input.leftPressed = false;
-  input.rightPressed = false;
-  input.keyBackspace = false;
-  input.keyDelete = false;
-  input.keyEnter = false;
-  input.keyTab = false;
-  input.keyEsc = false;
-  input.keyLeft = false;
-  input.keyRight = false;
-  input.keyHome = false;
-  input.keyEnd = false;
-  input.keyF5 = false;
-  input.keyUpNav = false;
-  input.keyBackNav = false;
-  input.keyForwardNav = false;
-  input.copy = false;
-  input.paste = false;
-  input.selectAll = false;
-  input.openShortcut = false;
-  input.typed.clear();
 }
 
 }  // namespace
@@ -380,7 +330,7 @@ static SVView* gView = nil;
   app_->update(input_, host_, frame);
   MenuRequest menuRequest;
   const bool showContextMenu = app_->takeMenu(menuRequest);
-  clearEdges(input_);
+  input_.clearEdges();
 
   if (frame.width > 0 && frame.height > 0 && !frame.bgra.empty()) {
     CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];

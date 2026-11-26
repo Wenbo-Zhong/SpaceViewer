@@ -1,8 +1,9 @@
-#include "app.hpp"
+#include "app/app.hpp"
 #include "host.hpp"
 #include "menu.hpp"
 #include "dpi.hpp"
-#include "text.hpp"
+#include "i18n/text.hpp"
+#include "i18n/unicode.hpp"
 
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -83,36 +84,6 @@ struct X11App {
   XIM xim = nullptr;
   XIC xic = nullptr;
 };
-
-void clearEdges(Input& input) {
-  input.leftPressed = false;
-  input.rightPressed = false;
-  input.keyBackspace = false;
-  input.keyDelete = false;
-  input.keyEnter = false;
-  input.keyTab = false;
-  input.keyEsc = false;
-  input.keyLeft = false;
-  input.keyRight = false;
-  input.keyHome = false;
-  input.keyEnd = false;
-  input.keyF5 = false;
-  input.keyUpNav = false;
-  input.keyBackNav = false;
-  input.keyForwardNav = false;
-  input.copy = false;
-  input.paste = false;
-  input.selectAll = false;
-  input.openShortcut = false;
-  input.typed.clear();
-}
-
-bool isChinese(uint32_t cp) {
-  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
-         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
-         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
-         (cp >= 0xFF00 && cp <= 0xFFEF);
-}
 
 bool traditionalChinese() {
   return zh::language() == zh::Language::TraditionalChinese;
@@ -369,7 +340,7 @@ int spaceviewer_x11_main(int argc, char** argv) {
       linuxMenuShowContext(app.menu, context, uiInput.windowW, windowHeight, uiInput.controlDpi(), false);
     linuxMenuPresent(app.menu, frame, windowHeight, uiInput.controlDpi(), false);
     present(app, frame);
-    clearEdges(app.input);
+    app.input.clearEdges();
   };
 
   XMapWindow(display, app.window);

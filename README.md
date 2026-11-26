@@ -34,7 +34,7 @@ Windows 发行版是单个 exe，不带额外 DLL。程序只调用 Windows 7 �
 
 ## Windows 7 上编译
 
-在 Windows 7 SP1 上用能在该系统运行的 MinGW-w64（GCC 9–13，MSVCRT，不要用只带 UCRT 且自身无法在 Windows 7 启动的新包）：
+在 Windows 7 SP1 上使用兼容该系统的 CMake，以及能在该系统运行的 MinGW-w64（GCC 9–13，MSVCRT，不要用只带 UCRT 且自身无法在 Windows 7 启动的新包）：
 
 ```bat
 build-win7.bat
@@ -59,7 +59,35 @@ CMake 使用 `/MT`，因此 Release 目录里的 `SpaceViewer.exe` 不依赖 VC 
 
 ## 源码布局
 
-引擎在 `src/`。窗口代码按系统分开：`src/platform/win`、`src/platform/linux`、`src/platform/apple`。
+共享代码按职责划分，平台目录处理系统接口与原生窗口：
+
+| 目录 | 职责 |
+| --- | --- |
+| `src/app/` | 应用状态、命令分发、键鼠事件和文本编辑；`app.hpp`、`host.hpp`、`input.hpp` 是宿主接口 |
+| `src/model/` | 紧凑扫描树、文件类别、过滤和可见大小计算 |
+| `src/scan/` | 扫描生命周期、快照发布、任务池、批量入树和节点更新 |
+| `src/view/` | 矩形树图布局、绘制、控件、视觉参数、动效和 OpenCL 填充；输出 `Frame` 给原生窗口 |
+| `src/io/` | CSV 和扫描快照读写 |
+| `src/i18n/` | 文案、格式化和 Unicode 辅助函数；生成的文案头文件不手动修改 |
+| `src/platform/posix/` | macOS/Linux 共用的目录枚举和卷信息 |
+| `src/platform/{win,apple,linux}/` | 原生窗口、各系统文件监听及平台专有扫描规则 |
+| `tests/` | 现有自检和共享逻辑、命令一致性、扫描回归测试 |
+
+`App::State` 和 `Scanner::Impl` 的内部头文件只供实现使用。增加菜单或快捷键时，通用动作在 `app/commands.cpp` 实现，入口只做事件映射；绘制与输入命中仍共享上一帧的区域信息。目录枚举通过共享扫描层批量入树与累计大小，各系统保留原有大小写、符号链接和跨卷规则。
+
+所有构建脚本使用同一份 CMake 源文件列表，避免新增文件后遗漏某个平台。
+
+## 开发验证
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+`selftest` 验证过滤、布局、导出、快照和子树刷新；`refactor` 验证共享辅助函数、键盘/工具栏/原生命令的一致性及扫描变更。应用的 `--self-test` 入口保持兼容。多配置生成器运行测试时加 `-C Release`。
+
+只验证共享逻辑、不构建原生窗口时，可配置 `-DSPACEVIEWER_BUILD_APP=OFF`。Linux 此模式不需要 X11/Wayland 开发包；macOS 仍使用系统框架验证 FSEvents 和卷信息。
 
 ## Ubuntu
 
@@ -75,7 +103,7 @@ cmake --build build
 ./build/spaceviewer
 ```
 
-没有 CMake 时可以 `sh build-linux.sh`。选择文件夹需要 `zenity` 或 `kdialog`；没有这两个程序时，在路径栏输入路径后回车。X11 高分屏请让 `Xft.dpi` 等于实际 DPI。Wayland 使用输出的整数缩放，界面按物理像素绘制。
+也可以 `sh build-linux.sh`。选择文件夹需要 `zenity` 或 `kdialog`；没有这两个程序时，在路径栏输入路径后回车。X11 高分屏请让 `Xft.dpi` 等于实际 DPI。Wayland 使用输出的整数缩放，界面按物理像素绘制。
 
 生成包含程序和字体的分发包（安装上述编译依赖后）：
 

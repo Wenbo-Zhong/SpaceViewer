@@ -14,7 +14,7 @@ for path in locale_dirs:
         raise SystemExit(f"{path.name}: directory must use a BCP 47 locale tag")
     files[path.name] = json.loads((path / "strings.json").read_text(encoding="utf-8"))
 keys = set(files["en-US"])
-header = (ROOT / "src" / "text.hpp").read_text(encoding="utf-8")
+header = (ROOT / "src" / "i18n" / "text.hpp").read_text(encoding="utf-8")
 declared = {key for key in re.findall(r"SPACEVIEWER_TEXT\((\w+)\)", header) if key != "key"}
 if keys != declared:
     raise SystemExit(f"text.hpp key mismatch: missing={sorted(declared-keys)}, unused={sorted(keys-declared)}")
@@ -31,4 +31,4 @@ for locale, data in sorted(files.items()):
     for key, value in sorted(data.items()):
         lines.append(f"  {{{literal(locale)}, {literal(key)}, {literal(value)}}},")
 lines += ["};", "}  // namespace zh", ""]
-(ROOT / "src" / "locales_generated.hpp").write_text("\n".join(lines), encoding="utf-8")
+(ROOT / "src" / "i18n" / "locales_generated.hpp").write_text("\n".join(lines), encoding="utf-8")

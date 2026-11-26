@@ -9,25 +9,80 @@ if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version" FORCE)
 endif()
 
+if(APPLE)
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD 17)
+  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+  set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
+
 if(MSVC)
   # Static CRT so the Windows build does not depend on the Visual C++ redistributable.
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-add_executable(spaceviewer
-  src/main.cpp
-  src/util.cpp
-  src/layout.cpp
-  src/scan.cpp
-  src/ui.cpp
-  src/export.cpp
-  src/selftest.cpp
-  src/motion.cpp
-  src/opencl_fill.cpp
-  src/text.cpp
+include(CTest)
+option(SPACEVIEWER_BUILD_APP "Build the native desktop application" ON)
+
+add_library(spaceviewer_core STATIC
+  src/app/app.cpp
+  src/app/commands.cpp
+  src/app/edit.cpp
+  src/app/input.cpp
+  src/app/input_events.cpp
+  src/app/tile_input.cpp
+  src/model/tree.cpp
+  src/model/filter.cpp
+  src/model/category.cpp
+  src/view/layout.cpp
+  src/scan/scanner.cpp
+  src/scan/tasks.cpp
+  src/scan/tree_updates.cpp
+  src/io/export.cpp
+  src/view/motion.cpp
+  src/view/opencl_fill.cpp
+  src/view/palette.cpp
+  src/view/raster.cpp
+  src/view/metrics.cpp
+  src/view/icons.cpp
+  src/view/render.cpp
+  src/view/controls.cpp
+  src/view/status.cpp
+  src/view/treemap.cpp
+  src/i18n/text.cpp
+  src/i18n/format.cpp
+  src/i18n/unicode.cpp
 )
 
-target_include_directories(spaceviewer PRIVATE src)
+target_include_directories(spaceviewer_core PUBLIC src "${CMAKE_CURRENT_SOURCE_DIR}")
+
+if(WIN32)
+  target_sources(spaceviewer_core PRIVATE
+    src/platform/win/encoding.cpp src/platform/win/scan.cpp src/platform/win/watch.cpp)
+  target_compile_definitions(spaceviewer_core PUBLIC
+    _WIN32_WINNT=0x0601 WINVER=0x0601 UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  if(MSVC)
+    target_compile_options(spaceviewer_core PUBLIC /utf-8 /W3)
+  endif()
+elseif(APPLE)
+  target_sources(spaceviewer_core PRIVATE
+    src/platform/posix/volume.cpp src/platform/posix/scan.cpp
+    src/platform/apple/disk_space.mm src/platform/apple/scan_policy.cpp src/platform/apple/watch.cpp)
+  set_source_files_properties(src/platform/apple/disk_space.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_link_libraries(spaceviewer_core PUBLIC "-framework Cocoa" "-framework CoreServices")
+else()
+  target_sources(spaceviewer_core PRIVATE
+    src/platform/posix/volume.cpp src/platform/posix/scan.cpp src/platform/linux/watch.cpp)
+endif()
+
+if(SPACEVIEWER_BUILD_APP OR BUILD_TESTING)
+  add_library(spaceviewer_test_support STATIC tests/selftest.cpp)
+  target_link_libraries(spaceviewer_test_support PUBLIC spaceviewer_core)
+endif()
+
+if(SPACEVIEWER_BUILD_APP)
+add_executable(spaceviewer src/app/main.cpp)
+target_link_libraries(spaceviewer PRIVATE spaceviewer_test_support)
 
 set(SPACEVIEWER_GENERATED_FONTS_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated-fonts")
 file(MAKE_DIRECTORY "${SPACEVIEWER_GENERATED_FONTS_DIR}")
@@ -83,11 +138,8 @@ if(WIN32)
   set_property(SOURCE src/platform/win/app.rc APPEND PROPERTY OBJECT_DEPENDS
     "${SPACEVIEWER_FONTS};${SPACEVIEWER_FONT_LICENSES}")
 elseif(APPLE)
-  enable_language(OBJCXX)
   target_sources(spaceviewer PRIVATE
     src/platform/apple/window.mm
-    src/platform/apple/disk_space.mm
-    src/platform/apple/scan_policy.cpp
     src/platform/apple/PrivacyInfo.xcprivacy
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/SpaceViewer.icns"
     ${SPACEVIEWER_FONTS}
@@ -98,7 +150,7 @@ elseif(APPLE)
     PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Fonts)
   set_source_files_properties(${SPACEVIEWER_FONT_LICENSES}
     PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Fonts)
-  set_source_files_properties(src/platform/apple/window.mm src/platform/apple/disk_space.mm
+  set_source_files_properties(src/platform/apple/window.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   set_source_files_properties(src/platform/apple/PrivacyInfo.xcprivacy
     PROPERTIES HEADER_FILE_ONLY TRUE MACOSX_PACKAGE_LOCATION Resources)
@@ -175,10 +227,27 @@ else()
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACEVIEWER_FONT_LICENSES} "$<TARGET_FILE_DIR:spaceviewer>/fonts"
     VERBATIM)
 endif()
+endif() # SPACEVIEWER_BUILD_APP
+
+if(BUILD_TESTING)
+  add_executable(spaceviewer_tests tests/main.cpp tests/refactor_test.cpp)
+  target_link_libraries(spaceviewer_tests PRIVATE spaceviewer_test_support)
+  if(MINGW)
+    target_link_options(spaceviewer_tests PRIVATE -static -static-libgcc -static-libstdc++)
+  endif()
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-results/selftest"
+    "${CMAKE_CURRENT_BINARY_DIR}/test-results/refactor")
+  add_test(NAME selftest COMMAND spaceviewer_tests --self-test)
+  set_tests_properties(selftest PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-results/selftest")
+  add_test(NAME refactor COMMAND spaceviewer_tests --refactor-test)
+  set_tests_properties(refactor PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-results/refactor")
+endif()
 
 find_package(Threads REQUIRED)
-target_link_libraries(spaceviewer PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(spaceviewer_core PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1)
-  target_link_libraries(spaceviewer PRIVATE stdc++fs)
+  target_link_libraries(spaceviewer_core PUBLIC stdc++fs)
 endif()

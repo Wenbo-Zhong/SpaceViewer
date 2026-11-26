@@ -2,11 +2,12 @@
 #define _GNU_SOURCE
 #endif
 
-#include "app.hpp"
+#include "app/app.hpp"
 #include "host.hpp"
 #include "menu.hpp"
 #include "dpi.hpp"
-#include "text.hpp"
+#include "i18n/text.hpp"
+#include "i18n/unicode.hpp"
 
 #include "xdg-decoration-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -48,29 +49,6 @@ struct Output {
   int widthMm = 0, heightMm = 0;
   bool entered = false;
 };
-
-void clearEdges(Input& input) {
-  input.leftPressed = false;
-  input.rightPressed = false;
-  input.keyBackspace = false;
-  input.keyDelete = false;
-  input.keyEnter = false;
-  input.keyTab = false;
-  input.keyEsc = false;
-  input.keyLeft = false;
-  input.keyRight = false;
-  input.keyHome = false;
-  input.keyEnd = false;
-  input.keyF5 = false;
-  input.keyUpNav = false;
-  input.keyBackNav = false;
-  input.keyForwardNav = false;
-  input.copy = false;
-  input.paste = false;
-  input.selectAll = false;
-  input.openShortcut = false;
-  input.typed.clear();
-}
 
 struct ShmBuffer {
   Wayland* app = nullptr;
@@ -488,13 +466,6 @@ bool loadFace(Wayland& app, int px, bool cjk = false) {
   return true;
 }
 
-bool isChinese(uint32_t cp) {
-  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
-         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
-         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
-         (cp >= 0xFF00 && cp <= 0xFFEF);
-}
-
 uint32_t decodeUtf8(const std::string& text, size_t& index) {
   if (index >= text.size()) return 0;
   auto byte = static_cast<unsigned char>(text[index++]);
@@ -775,7 +746,7 @@ int spaceviewer_wayland_main(int argc, char** argv) {
       linuxMenuShowContext(app.menu, context, uiInput.windowW, windowHeight, uiInput.controlDpi(), true);
     linuxMenuPresent(app.menu, frame, windowHeight, uiInput.controlDpi());
     present(app, frame);
-    clearEdges(app.input);
+    app.input.clearEdges();
     app.dirty = false;
   };
 

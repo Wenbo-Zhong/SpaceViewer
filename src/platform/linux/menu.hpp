@@ -1,6 +1,8 @@
 #pragma once
 
-#include "types.hpp"
+#include "app/input.hpp"
+#include "view/frame.hpp"
+#include "view/interaction.hpp"
 
 struct LinuxMenuState {
   int active = -1;

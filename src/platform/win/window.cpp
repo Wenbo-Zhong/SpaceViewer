@@ -1,6 +1,7 @@
-#include "app.hpp"
-#include "text.hpp"
-#include "util.hpp"
+#include "app/app.hpp"
+#include "i18n/text.hpp"
+#include "i18n/unicode.hpp"
+#include "platform/win/encoding.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -86,30 +87,6 @@ int windowDpi(HWND hwnd) {
   return dpi > 0 ? dpi : 96;
 }
 
-void clearEdges(Input& input) {
-  input.command = -1;
-  input.leftPressed = false;
-  input.rightPressed = false;
-  input.keyBackspace = false;
-  input.keyDelete = false;
-  input.keyEnter = false;
-  input.keyTab = false;
-  input.keyEsc = false;
-  input.keyLeft = false;
-  input.keyRight = false;
-  input.keyHome = false;
-  input.keyEnd = false;
-  input.keyF5 = false;
-  input.keyUpNav = false;
-  input.keyBackNav = false;
-  input.keyForwardNav = false;
-  input.copy = false;
-  input.paste = false;
-  input.selectAll = false;
-  input.openShortcut = false;
-  input.typed.clear();
-}
-
 void loadBundledFonts(WinState& state) {
   const HMODULE module = GetModuleHandleW(nullptr);
   for (int id : {301, 302, 303}) {
@@ -146,10 +123,7 @@ bool isChinese(const std::wstring& text, size_t index) {
       text[index + 1] >= 0xDC00 && text[index + 1] <= 0xDFFF) {
     cp = 0x10000 + ((cp - 0xD800) << 10) + (text[index + 1] - 0xDC00);
   }
-  return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
-         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F) ||
-         (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
-         (cp >= 0xFF00 && cp <= 0xFFEF);
+  return ::isChinese(cp);
 }
 
 void ensureBitmap(WinState& state, int width, int height) {
@@ -265,10 +239,10 @@ void redraw(WinState& state) {
     int command = TrackPopupMenu(popup, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, state.hwnd, nullptr);
     DestroyMenu(popup);
     state.app.applyMenu(static_cast<MenuCommand>(command), state.host);
-    clearEdges(state.input);
+    state.input.clearEdges();
     InvalidateRect(state.hwnd, nullptr, FALSE);
   }
-  clearEdges(state.input);
+  state.input.clearEdges();
   if (state.app.animating()) SetTimer(state.hwnd, 1, 16, nullptr);
   else KillTimer(state.hwnd, 1);
 }

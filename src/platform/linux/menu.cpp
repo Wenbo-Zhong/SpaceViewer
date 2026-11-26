@@ -1,5 +1,6 @@
 #include "menu.hpp"
-#include "text.hpp"
+#include "i18n/text.hpp"
+#include "view/raster.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -53,15 +54,6 @@ int menuAt(int x, float dpi) {
   return -1;
 }
 
-void fill(Frame& frame, int x, int y, int w, int h, uint32_t rgb) {
-  const int x0 = std::max(0, x), y0 = std::max(0, y);
-  const int x1 = std::min(frame.width, x + w), y1 = std::min(frame.height, y + h);
-  const uint32_t pixel = packRgb(rgb);
-  for (int yy = y0; yy < y1; ++yy)
-    std::fill(frame.bgra.begin() + static_cast<size_t>(yy) * frame.width + x0,
-              frame.bgra.begin() + static_cast<size_t>(yy) * frame.width + x1, pixel);
-}
-
 void circle(Frame& frame, int cx, int cy, int radius, uint32_t rgb) {
   const uint32_t pixel = packRgb(rgb);
   for (int y = -radius; y <= radius; ++y) {
@@ -81,18 +73,18 @@ void drawControl(Frame& frame, int x, int y, int width, int height, int control,
   const uint32_t icon = hovered && control == 2 ? 0xffffff : 0x3d3846;
   const int t = std::max(1, scale(dpi, 1));
   if (control == 0) {
-    fill(frame, cx - scale(dpi, 5), cy, scale(dpi, 10), t, icon);
+    fillRect(frame, cx - scale(dpi, 5), cy, scale(dpi, 10), t, icon);
   } else if (control == 1) {
     const int side = scale(dpi, 9);
-    fill(frame, cx - side / 2, cy - side / 2, side, t, icon);
-    fill(frame, cx - side / 2, cy + side / 2, side, t, icon);
-    fill(frame, cx - side / 2, cy - side / 2, t, side, icon);
-    fill(frame, cx + side / 2, cy - side / 2, t, side, icon);
+    fillRect(frame, cx - side / 2, cy - side / 2, side, t, icon);
+    fillRect(frame, cx - side / 2, cy + side / 2, side, t, icon);
+    fillRect(frame, cx - side / 2, cy - side / 2, t, side, icon);
+    fillRect(frame, cx + side / 2, cy - side / 2, t, side, icon);
   } else {
     const int d = scale(dpi, 4);
     for (int i = -d; i <= d; ++i) {
-      fill(frame, cx + i, cy + i, t, t, icon);
-      fill(frame, cx + i, cy - i, t, t, icon);
+      fillRect(frame, cx + i, cy + i, t, t, icon);
+      fillRect(frame, cx + i, cy - i, t, t, icon);
     }
   }
 }
@@ -195,8 +187,8 @@ void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, floa
   for (Frame::Text& item : frame.texts) item.y += top;
 
   if (clientTitlebar) {
-    fill(frame, 0, 0, frame.width, title, 0xe8edf2);
-    fill(frame, 0, title - 1, frame.width, 1, 0xc7d0d9);
+    fillRect(frame, 0, 0, frame.width, title, 0xe8edf2);
+    fillRect(frame, 0, title - 1, frame.width, 1, 0xc7d0d9);
     const int controlWidth = scale(dpi, 40);
     const int controlsX = std::max(0, frame.width - controlWidth * 3);
     text(frame, scale(dpi, 12), 0, controlsX - scale(dpi, 16), title - 1, scale(dpi, 13), "SpaceViewer");
@@ -205,12 +197,12 @@ void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, floa
     drawControl(frame, controlsX + controlWidth * 2, 0, controlWidth, title, 2, menu.hoveredControl == 2, dpi);
   }
 
-  fill(frame, 0, title, frame.width, height, 0xf8fafc);
-  fill(frame, 0, title + height - 1, frame.width, 1, 0xe6e8eb);
+  fillRect(frame, 0, title, frame.width, height, 0xf8fafc);
+  fillRect(frame, 0, title + height - 1, frame.width, 1, 0xe6e8eb);
   const char* labels[] = {"文件", "视图"};
   const int left = scale(dpi, 8), width = scale(dpi, 64);
   for (int i = 0; i < 2; ++i) {
-    if (menu.active == i) fill(frame, left + i * width, title + 1, width, height - 2, 0xe8edf2);
+    if (menu.active == i) fillRect(frame, left + i * width, title + 1, width, height - 2, 0xe8edf2);
     text(frame, left + i * width, title, width, height - 1, scale(dpi, 13), labels[i], true);
   }
   if (menu.active >= 0) {
@@ -220,11 +212,11 @@ void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, floa
     const int x = left + menu.active * width;
     const int rows = static_cast<int>(items.size());
     coverTexts(frame, x, top, popupW, rowH * rows);
-    fill(frame, x, top, popupW, rowH * rows, 0xffffff);
-    fill(frame, x, top, popupW, 1, 0x9caab7);
-    fill(frame, x, top + rowH * rows - 1, popupW, 1, 0x9caab7);
-    fill(frame, x, top, 1, rowH * rows, 0x9caab7);
-    fill(frame, x + popupW - 1, top, 1, rowH * rows, 0x9caab7);
+    fillRect(frame, x, top, popupW, rowH * rows, 0xffffff);
+    fillRect(frame, x, top, popupW, 1, 0x9caab7);
+    fillRect(frame, x, top + rowH * rows - 1, popupW, 1, 0x9caab7);
+    fillRect(frame, x, top, 1, rowH * rows, 0x9caab7);
+    fillRect(frame, x + popupW - 1, top, 1, rowH * rows, 0x9caab7);
     for (int i = 0; i < rows; ++i)
       text(frame, x + scale(dpi, 12), top + rowH * i, popupW - scale(dpi, 20), rowH,
            scale(dpi, 13), items[static_cast<size_t>(i)].label);
@@ -234,10 +226,10 @@ void linuxMenuPresent(LinuxMenuState& menu, Frame& frame, int windowHeight, floa
     const int x = menu.contextX, y = menu.contextY, w = menu.contextWidth;
     const int rowH = scale(dpi, 30), h = rowH * static_cast<int>(items.size());
     coverTexts(frame, x, y, w, h);
-    fill(frame, x, y, w, h, 0x9caab7);
-    fill(frame, x + 1, y + 1, w - 2, h - 2, 0xffffff);
+    fillRect(frame, x, y, w, h, 0x9caab7);
+    fillRect(frame, x + 1, y + 1, w - 2, h - 2, 0xffffff);
     for (int i = 0; i < static_cast<int>(items.size()); ++i) {
-      if (menu.hoveredContextRow == i) fill(frame, x + 1, y + i * rowH + 1, w - 2, rowH - 2, 0xe8edf2);
+      if (menu.hoveredContextRow == i) fillRect(frame, x + 1, y + i * rowH + 1, w - 2, rowH - 2, 0xe8edf2);
       text(frame, x + scale(dpi, 12), y + rowH * i, w - scale(dpi, 24), rowH,
            scale(dpi, 13), items[static_cast<size_t>(i)].label);
     }
