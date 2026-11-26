@@ -47,7 +47,9 @@ jobs:
           unpacked=$(mktemp -d)
           trap 'rm -rf "$unpacked"' EXIT
           ditto -x -k SpaceViewer-macOS-universal.zip "$unpacked"
-          lipo "$unpacked/SpaceViewer.app/Contents/MacOS/SpaceViewer" -verify_arch arm64 x86_64
+          for architecture in arm64 x86_64; do
+            lipo "$unpacked/SpaceViewer.app/Contents/MacOS/SpaceViewer" -verify_arch "$architecture"
+          done
           cmake "-DSPACEVIEWER_APP_BUNDLE=$unpacked/SpaceViewer.app" -P tests/apple_bundle_signature_test.cmake
       - uses: actions/upload-artifact@v4
         with:
