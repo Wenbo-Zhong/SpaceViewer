@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "host.hpp"
+
 int spaceviewer_x11_main(int argc, char** argv);
 int spaceviewer_wayland_main(int argc, char** argv);
 
@@ -10,6 +12,7 @@ int spaceviewer_main(int argc, char** argv) {
   // AppImage runtimes may exec the app with SIGCHLD ignored; popen/pclose
   // needs the default disposition to collect the file picker exit status.
   std::signal(SIGCHLD, SIG_DFL);
+  linuxIntegrateAppImage();
   bool forceX11 = false;
   bool forceWayland = false;
   for (int i = 1; i < argc; ++i) {

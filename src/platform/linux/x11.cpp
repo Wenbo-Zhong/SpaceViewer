@@ -282,6 +282,8 @@ int spaceviewer_x11_main(int argc, char** argv) {
   app.height = height;
   app.window = XCreateSimpleWindow(display, RootWindow(display, app.screen), 0, 0, width, height, 0,
                                    BlackPixel(display, app.screen), WhitePixel(display, app.screen));
+  XClassHint classHint{const_cast<char*>("spaceviewer"), const_cast<char*>("spaceviewer")};
+  XSetClassHint(display, app.window, &classHint);
   app.gc = XCreateGC(display, app.window, 0, nullptr);
   app.wmDelete = XInternAtom(display, "WM_DELETE_WINDOW", False);
   app.clipboard = XInternAtom(display, "CLIPBOARD", False);

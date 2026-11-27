@@ -48,6 +48,8 @@ stage_dir=$(mktemp -d "$build_dir/appimage.XXXXXX")
 trap 'rm -rf "$stage_dir"' EXIT HUP INT TERM
 appdir="$stage_dir/SpaceViewer.AppDir"
 mkdir -p "$appdir/usr/bin/fonts" "$repo_dir/out"
+install -m 755 "$repo_dir/src/platform/linux/spaceviewer-appimage-thumbnailer" \
+  "$appdir/usr/bin/spaceviewer-appimage-thumbnailer"
 for font in Inter-Regular.ttf SourceHanSansSC-Regular.otf SourceHanSansTC-Regular.otf \
             Inter-LICENSE.txt SourceHanSans-LICENSE.txt; do
   test -s "$build_dir/fonts/$font"

@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Read the icon from a type 2 AppImage without running the image."""
+
+import os
+import resource
+import struct
+import subprocess
+import sys
+
+
+def squashfs_offset(path):
+    with open(path, "rb") as image:
+        header = image.read(64)
+        if len(header) < 64 or header[:4] != b"\x7fELF" or header[8:11] != b"AI\x02":
+            raise ValueError("not a type 2 AppImage")
+        order = {1: "<", 2: ">"}[header[5]]
+        if header[4] == 1:
+            table = struct.unpack_from(order + "I", header, 32)[0]
+            entry_size, count = struct.unpack_from(order + "HH", header, 46)
+        elif header[4] == 2:
+            table = struct.unpack_from(order + "Q", header, 40)[0]
+            entry_size, count = struct.unpack_from(order + "HH", header, 58)
+        else:
+            raise ValueError("unknown ELF class")
+        offset = table + entry_size * count
+        image.seek(offset)
+        if image.read(4) != b"hsqs":
+            raise ValueError("missing SquashFS superblock")
+        return offset
+
+
+try:
+    source, output = sys.argv[1:]
+    source = os.path.abspath(source)
+    offset = squashfs_offset(source)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (4 * 1024 * 1024,) * 2)
+    with open(output, "wb") as thumbnail:
+        subprocess.run(
+            ["unsquashfs", "-processors", "1", "-o", str(offset), "-cat", source, ".DirIcon"],
+            stdout=thumbnail,
+            check=True,
+            timeout=10,
+        )
+    with open(output, "rb") as thumbnail:
+        if thumbnail.read(8) != b"\x89PNG\r\n\x1a\n":
+            sys.exit(1)
+except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    sys.exit(1)

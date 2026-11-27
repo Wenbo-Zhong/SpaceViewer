@@ -8,7 +8,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -137,6 +139,94 @@ void revealInFiles(const std::string& path) {
 }
 
 }  // namespace
+
+void linuxIntegrateAppImage() {
+  const char* imageEnv = std::getenv("APPIMAGE");
+  const char* appDirEnv = std::getenv("APPDIR");
+  const char* homeEnv = std::getenv("HOME");
+  // Elevated root scans must never create launchers under /root.
+  if (!imageEnv || !*imageEnv || !appDirEnv || !*appDirEnv || !homeEnv || !*homeEnv || geteuid() == 0) return;
+
+  std::error_code error;
+  const auto image = std::filesystem::canonical(imageEnv, error);
+  if (error || !std::filesystem::is_regular_file(image, error)) return;
+  const auto appDir = std::filesystem::path(appDirEnv);
+  const auto sourceDesktop = appDir / "spaceviewer.desktop";
+  const auto sourceIcon = appDir / "spaceviewer.png";
+  const auto sourceThumbnailer = appDir / "usr/bin/spaceviewer-appimage-thumbnailer";
+  if (!std::filesystem::is_regular_file(sourceDesktop, error) || error ||
+      !std::filesystem::is_regular_file(sourceIcon, error) || error ||
+      !std::filesystem::is_regular_file(sourceThumbnailer, error) || error) return;
+
+  const auto home = std::filesystem::path(homeEnv);
+  const auto applications = home / ".local/share/applications";
+  const auto icons = home / ".local/share/icons/spaceviewer";
+  const auto thumbnailers = home / ".local/share/thumbnailers";
+  const auto libexec = home / ".local/libexec";
+  const auto desktopPath = applications / "spaceviewer.desktop";
+  const auto iconPath = icons / "spaceviewer.png";
+  const auto thumbnailerPath = thumbnailers / "spaceviewer-appimage.thumbnailer";
+  const auto helperPath = libexec / "spaceviewer-appimage-thumbnailer";
+  std::filesystem::create_directories(applications, error);
+  if (error) return;
+  std::filesystem::create_directories(icons, error);
+  if (error) return;
+  std::filesystem::create_directories(thumbnailers, error);
+  if (error) return;
+  std::filesystem::create_directories(libexec, error);
+  if (error) return;
+
+  std::filesystem::copy_file(sourceIcon, iconPath, std::filesystem::copy_options::overwrite_existing, error);
+  if (error) return;
+  std::filesystem::copy_file(sourceThumbnailer, helperPath, std::filesystem::copy_options::overwrite_existing, error);
+  if (error || chmod(helperPath.c_str(), 0700) != 0) return;
+
+  {
+    std::ofstream thumbnailer(thumbnailerPath, std::ios::trunc);
+    thumbnailer << "[Thumbnailer Entry]\nTryExec=" << helperPath.string()
+                << "\nExec=" << helperPath.string() << " %i %o"
+                << "\nMimeType=application/vnd.appimage;application/x-iso9660-appimage;\n";
+    if (!thumbnailer) return;
+  }
+
+  auto quoteExec = [](const std::string& value) {
+    std::string quoted = "\"";
+    for (char ch : value) {
+      if (ch == '\\' || ch == '"' || ch == '`' || ch == '$') quoted.push_back('\\');
+      if (ch == '%') quoted.push_back('%');
+      quoted.push_back(ch);
+    }
+    quoted.push_back('"');
+    return quoted;
+  };
+  std::ifstream input(sourceDesktop);
+  std::ostringstream contents;
+  std::string line;
+  bool hasClass = false;
+  while (std::getline(input, line)) {
+    if (line.rfind("Exec=", 0) == 0) line = "Exec=" + quoteExec(image.string()) + " %F";
+    else if (line.rfind("Icon=", 0) == 0) line = "Icon=" + iconPath.string();
+    else if (line.rfind("StartupWMClass=", 0) == 0) {
+      line = "StartupWMClass=spaceviewer";
+      hasClass = true;
+    }
+    contents << line << '\n';
+  }
+  if (!input.eof()) return;
+  if (!hasClass) contents << "StartupWMClass=spaceviewer\n";
+
+  const auto temporary = desktopPath.string() + ".tmp";
+  {
+    std::ofstream output(temporary, std::ios::trunc);
+    output << contents.str();
+    if (!output) {
+      std::filesystem::remove(temporary, error);
+      return;
+    }
+  }
+  std::filesystem::rename(temporary, desktopPath, error);
+  if (error) std::filesystem::remove(temporary, error);
+}
 
 std::vector<VolumeEntry> linuxListVolumes() {
   std::vector<VolumeEntry> out;

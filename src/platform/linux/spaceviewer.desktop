@@ -7,3 +7,4 @@ Icon=spaceviewer
 Terminal=false
 Categories=Utility;System;
 StartupNotify=true
+StartupWMClass=spaceviewer
